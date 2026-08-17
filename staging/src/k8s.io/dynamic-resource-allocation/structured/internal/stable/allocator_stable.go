@@ -41,6 +41,7 @@ type DeviceClassLister = internal.DeviceClassLister
 type Features = internal.Features
 type DeviceID = internal.DeviceID
 type Stats = internal.Stats
+type AllocatedState = internal.AllocatedState
 
 func MakeDeviceID(driver, pool, device string) DeviceID {
 	return internal.MakeDeviceID(driver, pool, device)
@@ -440,6 +441,12 @@ func (alloc *allocator) validateDeviceRequest(request requestAccessor, parentReq
 	requestData := requestData{
 		request:       request,
 		parentRequest: parentRequest,
+	}
+	// The DerivedAttributes feature is currently an alpha-only feature and is
+	// not supported in the stable variant. Implementation will be added
+	// once the feature's support is extended to this variant.
+	if len(request.derivedAttributes()) > 0 {
+		return requestData, fmt.Errorf("claim %s, request %s: cannot handle request with derived attributes, the feature is disabled", klog.KObj(claim), request.name())
 	}
 	for i, selector := range request.selectors() {
 		if selector.CEL == nil {
@@ -1154,6 +1161,9 @@ func (alloc *allocator) allocateDevice(r deviceIndices, device deviceWithID, mus
 	}
 
 	// The API validation logic has checked the ConsumesCounters referred should exist inside SharedCounters.
+	// countersReserved records whether checkAvailableCounters actually reserved
+	// this device's counters, so the rollback below only releases what was taken.
+	countersReserved := false
 	if len(device.ConsumesCounters) > 0 {
 		// If a device consumes counters from a counter set, verify that
 		// there is sufficient counters available.
@@ -1165,6 +1175,7 @@ func (alloc *allocator) allocateDevice(r deviceIndices, device deviceWithID, mus
 			alloc.logger.V(7).Info("Insufficient counters", "device", device.id)
 			return false, nil, nil
 		}
+		countersReserved = true
 	}
 
 	var parentRequestName string
@@ -1178,28 +1189,36 @@ func (alloc *allocator) allocateDevice(r deviceIndices, device deviceWithID, mus
 		subRequestName = requestData.request.name()
 	}
 
+	// state records the mutations this call makes so rollbackDevice can undo
+	// them. Every rejection path after a successful counter reservation calls
+	// rollbackDevice synchronously, and the success path returns a closure that
+	// calls the same helper during backtracking, so both undo routes stay
+	// identical. Passing the state by value to rollbackDevice keeps it (and the flags) on the
+	// stack for the rejection paths; only the success closure escapes.
+	state := deviceRollbackState{
+		countersReserved:   countersReserved,
+		previousNumResults: len(alloc.result[r.claimIndex].devices),
+	}
+
 	// Might be tainted, in which case the taint has to be tolerated.
 	// The check is skipped if the feature is disabled.
 	if alloc.features.DeviceTaints && taintPreventsAllocation(device.Device, request) {
+		alloc.rollbackDevice(r, device, baseRequestName, subRequestName, state)
 		return false, nil, nil
 	}
 
 	// It's available. Now check constraints.
-	for i, constraint := range alloc.constraints[r.claimIndex] {
-		added := constraint.add(baseRequestName, subRequestName, device.Device, device.id)
-		if !added {
+	for _, constraint := range alloc.constraints[r.claimIndex] {
+		if !constraint.add(baseRequestName, subRequestName, device.Device, device.id) {
+			alloc.rollbackDevice(r, device, baseRequestName, subRequestName, state)
 			if must {
 				// It does not make sense to declare a claim where a constraint prevents getting
 				// all devices. Treat this as an error.
 				return false, nil, fmt.Errorf("claim %s, request %s: cannot add device %s because a claim constraint would not be satisfied", klog.KObj(claim), request.name(), device.id)
 			}
-
-			// Roll back for all previous constraints before we return.
-			for e := 0; e < i; e++ {
-				alloc.constraints[r.claimIndex][e].remove(baseRequestName, subRequestName, device.Device, device.id)
-			}
 			return false, nil, nil
 		}
+		state.constraintsAdded++
 	}
 
 	// All constraints satisfied. Mark as in use (unless we do admin access)
@@ -1210,6 +1229,7 @@ func (alloc *allocator) allocateDevice(r deviceIndices, device deviceWithID, mus
 		alloc.allocatingDevices[device.id] = make(sets.Set[int])
 	}
 	alloc.allocatingDevices[device.id].Insert(r.claimIndex)
+	state.deviceMarked = true
 
 	result := internalDeviceResult{
 		request:       request.name(),
@@ -1221,21 +1241,50 @@ func (alloc *allocator) allocateDevice(r deviceIndices, device deviceWithID, mus
 	if request.adminAccess() {
 		result.adminAccess = ptr.To(request.adminAccess())
 	}
-	previousNumResults := len(alloc.result[r.claimIndex].devices)
 	alloc.result[r.claimIndex].devices = append(alloc.result[r.claimIndex].devices, result)
+	state.resultAdded = true
 
+	// Only this success path builds an escaping closure, so backtracking can undo
+	// a committed candidate. undo is a copy: capturing state directly would move it
+	// and its flags to the heap on the rejection paths too, which never escape.
+	undo := state
 	return true, func() {
-		for _, constraint := range alloc.constraints[r.claimIndex] {
-			constraint.remove(baseRequestName, subRequestName, device.Device, device.id)
-		}
-		alloc.allocatingDevices[device.id].Delete(r.claimIndex)
-		if alloc.features.PartitionableDevices && len(device.ConsumesCounters) > 0 {
-			alloc.deallocateCountersForDevice(device)
-		}
-		// Truncate, but keep the underlying slice.
-		alloc.result[r.claimIndex].devices = alloc.result[r.claimIndex].devices[:previousNumResults]
-		alloc.logger.V(7).Info("Device deallocated", "device", device.id)
+		alloc.rollbackDevice(r, device, baseRequestName, subRequestName, undo)
 	}, nil
+}
+
+// deviceRollbackState records the mutations allocateDevice makes for a single
+// candidate so rollbackDevice can undo them, both when the candidate is rejected
+// and when the backtracking search abandons a previously successful candidate.
+type deviceRollbackState struct {
+	countersReserved   bool
+	constraintsAdded   int
+	deviceMarked       bool
+	resultAdded        bool
+	previousNumResults int
+}
+
+// rollbackDevice reverses the mutations recorded in state, in the opposite order
+// they were applied. It is called synchronously on the rejection paths and, via
+// the closure returned on success, during backtracking.
+func (alloc *allocator) rollbackDevice(r deviceIndices, device deviceWithID, baseRequestName, subRequestName string, state deviceRollbackState) {
+	if state.resultAdded {
+		alloc.result[r.claimIndex].devices = alloc.result[r.claimIndex].devices[:state.previousNumResults]
+	}
+	if state.deviceMarked {
+		alloc.allocatingDevices[device.id].Delete(r.claimIndex)
+	}
+	for i := state.constraintsAdded - 1; i >= 0; i-- {
+		alloc.constraints[r.claimIndex][i].remove(baseRequestName, subRequestName, device.Device, device.id)
+	}
+	if state.countersReserved {
+		alloc.deallocateCountersForDevice(device)
+	}
+	if state.resultAdded {
+		// Only a fully allocated candidate recorded a result, so this is a real
+		// deallocation during backtracking, not a rejection rollback.
+		alloc.logger.V(7).Info("Device deallocated", "device", device.id)
+	}
 }
 
 func taintPreventsAllocation(device *draapi.Device, request requestAccessor) bool {
@@ -1284,6 +1333,7 @@ func (alloc *allocator) checkAvailableCounters(device deviceWithID) (bool, error
 		for _, counterSet := range pool.CounterSets {
 			availableCountersForCounterSet := make(map[string]resourceapi.Counter, len(counterSet.Counters))
 			for name, c := range counterSet.Counters {
+				c.Value = c.Value.DeepCopy()
 				availableCountersForCounterSet[name] = c
 			}
 			availableCountersForPool[counterSet.Name] = availableCountersForCounterSet
@@ -1351,6 +1401,7 @@ func (alloc *allocator) checkAvailableCounters(device deviceWithID) (bool, error
 		for name, c := range deviceCounterConsumption.Counters {
 			consumedCounters, found := consumedCountersForCounterSet[name]
 			if !found {
+				c.Value = c.Value.DeepCopy()
 				consumedCountersForCounterSet[name] = c
 				continue
 			}
@@ -1475,6 +1526,7 @@ type requestAccessor interface {
 	hasAdminAccess() bool
 	selectors() []resourceapi.DeviceSelector
 	tolerations() []resourceapi.DeviceToleration
+	derivedAttributes() []resourceapi.DeviceDerivedAttribute
 }
 
 // exactDeviceRequestAccessor is an implementation of the
@@ -1505,6 +1557,13 @@ func (d *exactDeviceRequestAccessor) adminAccess() bool {
 
 func (d *exactDeviceRequestAccessor) hasAdminAccess() bool {
 	return d.request.Exactly.AdminAccess != nil
+}
+
+func (d *exactDeviceRequestAccessor) derivedAttributes() []resourceapi.DeviceDerivedAttribute {
+	if d.request.Exactly != nil {
+		return d.request.Exactly.DerivedAttributes
+	}
+	return nil
 }
 
 func (d *exactDeviceRequestAccessor) selectors() []resourceapi.DeviceSelector {
@@ -1543,6 +1602,10 @@ func (d *deviceSubRequestAccessor) adminAccess() bool {
 
 func (d *deviceSubRequestAccessor) hasAdminAccess() bool {
 	return false
+}
+
+func (d *deviceSubRequestAccessor) derivedAttributes() []resourceapi.DeviceDerivedAttribute {
+	return d.subRequest.DerivedAttributes
 }
 
 func (d *deviceSubRequestAccessor) selectors() []resourceapi.DeviceSelector {

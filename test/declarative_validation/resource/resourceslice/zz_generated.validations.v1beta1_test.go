@@ -79,6 +79,13 @@ func init() {
 			"spec.devices[*].basic.consumesCounters[*]": {
 				{ErrorType: "FieldValueDuplicate"},
 			},
+			"spec.devices[*].basic.consumesCounters[*].compatibilityGroups": {
+				{ErrorType: "FieldValueTooMany", Origin: "maxItems"},
+			},
+			"spec.devices[*].basic.consumesCounters[*].compatibilityGroups[*]": {
+				{ErrorType: "FieldValueDuplicate"},
+				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-short-name"},
+			},
 			"spec.devices[*].basic.consumesCounters[*].counterSet": {
 				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-short-name"},
 				{ErrorType: "FieldValueRequired"},
@@ -87,9 +94,22 @@ func init() {
 				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-short-name"},
 				{ErrorType: "FieldValueRequired"},
 			},
+			"spec.devices[*].basic.nodeAllocatableResources[*].mapping": {
+				{ErrorType: "FieldValueInvalid", Origin: "union"},
+			},
+			"spec.devices[*].basic.nodeAllocatableResources[*].mapping.capacityKey": {
+				{ErrorType: "FieldValueRequired", Origin: "dependentRequired"},
+			},
+			"spec.devices[*].basic.nodeAllocatableResources[*].mapping.capacityMultiplier": {
+				{ErrorType: "FieldValueRequired", Origin: "dependentRequired"},
+			},
 			"spec.devices[*].basic.taints[*].effect": {
 				{ErrorType: "FieldValueNotSupported"},
 				{ErrorType: "FieldValueRequired"},
+			},
+			"spec.partitionTypeAttribute": {
+				{ErrorType: "FieldValueForbidden"},
+				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-resource-fully-qualified-name"},
 			},
 			"spec.sharedCounters": {
 				{ErrorType: "FieldValueTooMany", Origin: "maxItems"},
@@ -104,6 +124,10 @@ func init() {
 			"spec.sharedCounters[*].name": {
 				{ErrorType: "FieldValueInvalid", Origin: "format=k8s-short-name"},
 				{ErrorType: "FieldValueRequired"},
+			},
+			"spec.skipNodeOperations[*]": {
+				{ErrorType: "FieldValueDuplicate"},
+				{ErrorType: "FieldValueNotSupported"},
 			},
 		},
 	)

@@ -63,7 +63,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/cache"
-	metadatav1alpha1 "k8s.io/dynamic-resource-allocation/api/metadata/v1alpha1"
 	draclient "k8s.io/dynamic-resource-allocation/client"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
@@ -339,6 +338,33 @@ func (d *Driver) Run(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nodes
 	tCtx.CleanupCtx(d.TearDown)
 }
 
+// PublishResources re-publishes the given per-node driver resources through the
+// already-running kubelet plugins, replacing whatever was published before. It
+// is used to reset the resourceslice controller's desired state after a feature
+// gate has been toggled: while a gate is off the apiserver drops the gated
+// fields, and the controller latches its desired state to the stored (stripped)
+// result to avoid a hot update loop. Re-publishing the original resources once
+// the gate is back on restores those fields. This only handles the per-node
+// publishing path, not multi-host DriverResources.
+func (d *Driver) PublishResources(tCtx ktesting.TContext, driverResources map[string]resourceslice.DriverResources) {
+	for nodename, plugin := range d.Nodes {
+		dr, ok := driverResources[nodename]
+		if !ok {
+			continue
+		}
+		tCtx.ExpectNoError(plugin.PublishResources(tCtx, dr), "re-publish resources for node %s", nodename)
+	}
+}
+
+// SetExpectDroppedFields controls whether the driver's error handler tolerates
+// the apiserver dropping fields from published ResourceSlices. It must be set to
+// true before a feature gate that gates a ResourceSlice field is turned off, and
+// reset to false once the gate is back on and the driver has re-published the
+// affected slices. See the expectDroppedFields field for details.
+func (d *Driver) SetExpectDroppedFields(expect bool) {
+	d.expectDroppedFields.Store(expect)
+}
+
 // NewGetSlices generates a function for ktesting.Eventually/Consistently which
 // returns the ResourceSliceList.
 func (d *Driver) NewGetSlices() func(tCtx ktesting.TContext) *resourceapi.ResourceSliceList {
@@ -395,10 +421,29 @@ type Driver struct {
 	// Register the DRA test driver with the kubelet and expect DRA to work (= feature.DynamicResourceAllocation).
 	WithKubelet bool
 
+	// UsePrivilegedClient lets the test driver publish cluster-wide ResourceSlices.
+	// The default node-scoped client is intentionally restricted by admission to
+	// ResourceSlices for its own node.
+	UsePrivilegedClient bool
+
 	// Run driver pods. If false, only set up slices and class.
 	WithRealNodes bool
 
-	EnableDeviceMetadata bool
+	EnableDeviceMetadata   bool
+	DeviceMetadataVersions []schema.GroupVersion // Must be non-empty when EnableDeviceMetadata is true.
+
+	// ReconcilePoolWithName configures the ResourceSlice controller in each
+	// test driver plugin to reconcile only the pool with this name.
+	ReconcilePoolWithName string
+
+	// expectDroppedFields, when true, suppresses the test failure that the
+	// driver's error handler otherwise raises when the apiserver drops fields
+	// from a published ResourceSlice (a resourceslice.DroppedFieldsError). The
+	// feature gate cycle test sets this while a gate is intentionally off,
+	// because the apiserver is then expected to drop the gated fields. It is
+	// read from the resourceslice controller's background goroutine, so access
+	// goes through an atomic.
+	expectDroppedFields atomic.Bool
 
 	mutex      sync.Mutex
 	fail       map[MethodInstance]bool
@@ -454,9 +499,11 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 	}
 
 	driverResource, useMultiHostDriverResources := driverResources[multiHostDriverResources]
-	if useMultiHostDriverResources || !d.WithKubelet {
+	if useMultiHostDriverResources || !d.WithKubelet || d.UsePrivilegedClient {
 		// We have to remove ResourceSlices ourselves.
-		// Otherwise the kubelet does it after unregistering the driver.
+		// Otherwise the kubelet does it after unregistering the driver. A
+		// privileged client can create cluster-wide slices which the kubelet
+		// does not own and therefore cannot remove.
 		tCtx.CleanupCtx(func(tCtx ktesting.TContext) {
 			err := tCtx.Client().ResourceV1().ResourceSlices().DeleteCollection(tCtx, metav1.DeleteOptions{}, metav1.ListOptions{FieldSelector: resourceapi.ResourceSliceSelectorDriver + "=" + d.Name})
 			tCtx.ExpectNoError(err, "delete ResourceSlices of the driver")
@@ -480,8 +527,11 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 							Generation:         pool.Generation,
 							ResourceSliceCount: int64(len(pool.Slices)),
 						},
-						NodeSelector: pool.NodeSelector,
-						Devices:      slice.Devices,
+						NodeSelector:           pool.NodeSelector,
+						Devices:                slice.Devices,
+						SharedCounters:         slice.SharedCounters,
+						PerDeviceNodeSelection: slice.PerDeviceNodeSelection,
+						PartitionTypeAttribute: slice.PartitionTypeAttribute,
 					},
 				}
 				_, err := tCtx.Client().ResourceV1().ResourceSlices().Create(tCtx, resourceSlice, metav1.CreateOptions{})
@@ -631,6 +681,9 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 		//
 		// Here we merely use impersonation, which is faster.
 		driverClient := d.ImpersonateKubeletPlugin(tCtx, &pod)
+		if d.UsePrivilegedClient {
+			driverClient = tCtx.Client()
+		}
 
 		logger := klog.LoggerWithValues(klog.LoggerWithName(logger, "kubelet-plugin"), "node", pod.Spec.NodeName, "pod", klog.KObj(&pod))
 		loggerCtx := klog.NewContext(tCtx, logger)
@@ -656,7 +709,14 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 				logger.Info("deleting CDI file", "node", nodename, "filename", name)
 				if d.IsLocal {
 					name = path.Join("/var/run", name)
-					return os.Remove(name)
+					// Ignore the file already being gone. NodeUnprepareResources
+					// must be idempotent, and during a feature gate cycle the
+					// kubelet restarts and can unprepare the same claim more than
+					// once. This matches the default FileOperations.Remove.
+					if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+					return nil
 				}
 				return d.removeFile(tCtx, &pod, name)
 			},
@@ -673,7 +733,7 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 				// Instead of trying to detect errors which can be ignored, let's only
 				// treat errors as failures which definitely shouldn't occur:
 				var droppedFields *resourceslice.DroppedFieldsError
-				if errors.As(err, &droppedFields) {
+				if errors.As(err, &droppedFields) && !d.expectDroppedFields.Load() {
 					tCtx.Errorf("driver %s: %v", d.Name, err)
 				}
 			},
@@ -717,12 +777,12 @@ func (d *Driver) SetUp(tCtx ktesting.TContext, kubeletRootDir string, nodes *Nod
 			kubeletplugin.RegistrarDirectoryPath(registrarDirectoryPath),
 			kubeletplugin.RegistrarListener(d.listen(tCtx, &pod, &listenerPort)),
 
-			kubeletplugin.EnableDeviceMetadata(d.EnableDeviceMetadata),
+			kubeletplugin.EnableDeviceMetadata(d.EnableDeviceMetadata, d.DeviceMetadataVersions),
+		}
+		if d.ReconcilePoolWithName != "" {
+			pluginOpts = append(pluginOpts, kubeletplugin.ReconcilePoolWithName(d.ReconcilePoolWithName))
 		}
 		if d.EnableDeviceMetadata {
-			pluginOpts = append(pluginOpts,
-				kubeletplugin.MetadataVersions(metadatav1alpha1.SchemeGroupVersion),
-			)
 			if !d.IsLocal {
 				pluginOpts = append(pluginOpts,
 					kubeletplugin.MetadataFileOps(d.buildRemoteMetadataFileOps(tCtx, &pod)),

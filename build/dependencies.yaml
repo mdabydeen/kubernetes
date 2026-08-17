@@ -31,7 +31,7 @@ dependencies:
 
   # CoreDNS
   - name: "coredns-kube-up"
-    version: 1.14.4
+    version: 1.14.6
     refPaths:
     - path: cluster/addons/dns/coredns/coredns.yaml.base
       match: registry.k8s.io/coredns
@@ -41,7 +41,7 @@ dependencies:
       match: registry.k8s.io/coredns
 
   - name: "coredns-kubeadm"
-    version: 1.14.4
+    version: 1.14.6
     refPaths:
     - path: cmd/kubeadm/app/constants/constants.go
       match: CoreDNSVersion =
@@ -83,7 +83,7 @@ dependencies:
 
   # agnhost - E2E test image
   - name: "agnhost"
-    version: 2.66.0
+    version: 2.66.1
     refPaths:
     - path: test/utils/image/manifest.go
       match: configs\[Agnhost\] = Config{list\.PromoterE2eRegistry, "agnhost", "\d+\.\d+\.\d+"}
@@ -135,7 +135,7 @@ dependencies:
   # should also be updated, but go-runner is much harder to exploit and has
   # far less relevancy to go updates for Kubernetes more generally.
   - name: "registry.k8s.io/kube-cross: dependents"
-    version: v1.37.0-go1.26.4-bullseye.0
+    version: v1.37.0-go1.26.5-bullseye.0
     refPaths:
     - path: build/build-image/cross/VERSION
 
@@ -181,7 +181,7 @@ dependencies:
       match: configs\[DistrolessIptables\] = Config{list\.BuildImageRegistry, "distroless-iptables", "v([0-9]+)\.([0-9]+)\.([0-9]+)"}
 
   - name: "registry.k8s.io/go-runner: dependents"
-    version: v2.4.0-go1.26.4-bookworm.0
+    version: v2.4.0-go1.26.5-bookworm.0
     refPaths:
     - path: build/common.sh
       match: __default_go_runner_version=
@@ -257,7 +257,7 @@ dependencies:
 
   # GCB docker gcloud image
   - name: "gcb-docker-gcloud: dependents"
-    version: v20260108-7f313c340e@sha256:4d778a001ae3f4247b2b61d8a870319e71d66c87556969a6399b90972e4d0491
+    version: v20260729-0b834bafc6@sha256:77257657315bf94c1bba8f2471b1e210a75005ba8f589d94a48eeb8da176f007
     refPaths:
     - path: build/pause/cloudbuild.yaml
       match: gcr.io/k8s-staging-test-infra/gcb-docker-gcloud
