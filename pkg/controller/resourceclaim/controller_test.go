@@ -119,75 +119,14 @@ var (
 	testPodWithPodGroupAndNodeName = podInPodGroup(testPodWithNodeName, testPodName, testPodGroupName)
 	adminAccessFeatureOffError     = "admin access is requested, but the feature is disabled"
 
-	// WorkloadResourceClaims depends on GenericWorkload
-	allPossibleFeatures = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-	}
-	adminAccessDisabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-	}
-	adminAccessEnabled = []controllerFeatures{
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-	}
-	genericWorkloadDisabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-	}
-	genericWorkloadEnabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-	}
-	workloadResourceClaimsDisabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: false, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-	}
-	workloadResourceClaimsEnabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: true},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: true},
-	}
-	workloadResourceClaimsDisabledGenericWorkloadEnabled = []controllerFeatures{
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: false, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: false, WorkloadResourceClaims: false},
-		{AdminAccess: true, GenericWorkload: true, PrioritizedList: true, WorkloadResourceClaims: false},
-	}
+	allPossibleFeatures                                  = expandedControllerFeatures(nil, nil, nil, nil)
+	adminAccessDisabled                                  = expandedControllerFeatures(new(false), nil, nil, nil)
+	adminAccessEnabled                                   = expandedControllerFeatures(new(true), nil, nil, nil)
+	genericWorkloadDisabled                              = expandedControllerFeatures(nil, new(false), nil, nil)
+	genericWorkloadEnabled                               = expandedControllerFeatures(nil, new(true), nil, nil)
+	workloadResourceClaimsDisabled                       = expandedControllerFeatures(nil, nil, nil, new(false))
+	workloadResourceClaimsEnabled                        = expandedControllerFeatures(nil, nil, nil, new(true))
+	workloadResourceClaimsDisabledGenericWorkloadEnabled = expandedControllerFeatures(nil, new(true), nil, new(false))
 )
 
 func TestSyncHandler(t *testing.T) { testSyncHandler(ktesting.Init(t)) }
@@ -224,12 +163,12 @@ func TestCreateClaimDoesNotMutateTemplate(t *testing.T) {
 				tCtx.Fatalf("error creating controller: %v", err)
 			}
 
-			informerFactory.Start(tCtx.Done())
+			informerFactory.StartWithContext(tCtx)
 			defer func() {
 				tCtx.Cancel("stopping informers")
 				informerFactory.Shutdown()
 			}()
-			informerFactory.WaitForCacheSync(tCtx.Done())
+			informerFactory.WaitForCacheSyncWithContext(tCtx)
 
 			// cachedTemplate is the object the controller reads from the shared informer
 			// cache; snapshot it so any in-place mutation is detectable.
@@ -950,6 +889,28 @@ func testSyncHandler(tCtx ktesting.TContext) {
 			expectedMetrics: claimCreateMetrics{},
 		},
 		{
+			name: "clear-reserved-when-deleted-before-scheduling",
+			pods: func() []*v1.Pod {
+				pod := testPodWithResource.DeepCopy()
+				deleted := metav1.Now()
+				pod.DeletionTimestamp = &deleted
+				pod.Spec.NodeName = ""
+				return []*v1.Pod{pod}
+			}(),
+			key: claimKey(testClaimReserved),
+			claims: func() []*resourceapi.ResourceClaim {
+				claims := []*resourceapi.ResourceClaim{testClaimReserved.DeepCopy()}
+				claims[0].OwnerReferences = nil
+				return claims
+			}(),
+			expectedClaims: func() []resourceapi.ResourceClaim {
+				claims := []resourceapi.ResourceClaim{*testClaimAllocated.DeepCopy()}
+				claims[0].OwnerReferences = nil
+				return claims
+			}(),
+			expectedMetrics: claimCreateMetrics{},
+		},
+		{
 			name:            "remove-reserved",
 			pods:            []*v1.Pod{testPod},
 			key:             claimKey(testClaimReservedTwice),
@@ -1145,13 +1106,13 @@ func testSyncHandler(tCtx ktesting.TContext) {
 			}
 
 			// Ensure informers are up-to-date.
-			informerFactory.Start(tCtx.Done())
+			informerFactory.StartWithContext(tCtx)
 			stopInformers := func() {
 				tCtx.Cancel("stopping informers")
 				informerFactory.Shutdown()
 			}
 			defer stopInformers()
-			informerFactory.WaitForCacheSync(tCtx.Done())
+			informerFactory.WaitForCacheSyncWithContext(tCtx)
 
 			// Add claims that only exist in the mutation cache.
 			for _, claim := range tc.claimsInCache {
@@ -1322,13 +1283,13 @@ func testClaimExists(tCtx ktesting.TContext) {
 			tCtx.ExpectNoError(err, "creating controller")
 
 			// Ensure informers are up-to-date.
-			informerFactory.Start(tCtx.Done())
+			informerFactory.StartWithContext(tCtx)
 			stopInformers := func() {
 				tCtx.Cancel("stopping informers")
 				informerFactory.Shutdown()
 			}
 			defer stopInformers()
-			informerFactory.WaitForCacheSync(tCtx.Done())
+			informerFactory.WaitForCacheSyncWithContext(tCtx)
 
 			// Add claims that only exist in the mutation cache.
 			if claim := tc.claimInMutationCache; claim != nil {
@@ -1693,12 +1654,8 @@ func testEventHandlers(tCtx ktesting.TContext) {
 			tCtx.ExpectNoError(err, "creating ephemeral controller")
 			tCtx.Cleanup(ec.queue.ShutDown)
 
-			informerFactory.Start(tCtx.Done())
-			stopInformers := func() {
-				tCtx.Cancel("stopping informers")
-				informerFactory.Shutdown()
-			}
-			tCtx.Cleanup(stopInformers)
+			informerFactory.StartWithContext(tCtx)
+			tCtx.Cleanup(informerFactory.Shutdown)
 
 			drainQueue := func() []string {
 				tCtx.Wait()
@@ -1990,6 +1947,46 @@ func TestGetAdminAccessMetricLabel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// expandedControllerFeatures generates a list of [controllerFeatures] based on
+// the provided constraints. Arguments that are nil mean the corresponding
+// feature can be enabled or disabled. Non-nil arguments restrict the
+// corresponding feature to only that referenced value.
+func expandedControllerFeatures(adminAccess, genericWorkload, prioritizedList, workloadResourceClaims *bool) []controllerFeatures {
+	var combos []controllerFeatures
+	bools := []bool{false, true}
+	for _, adminAccessVal := range bools {
+		if adminAccess != nil && *adminAccess != adminAccessVal {
+			continue
+		}
+		for _, genericWorkloadVal := range bools {
+			if genericWorkload != nil && *genericWorkload != genericWorkloadVal {
+				continue
+			}
+			for _, prioritizedListVal := range bools {
+				if prioritizedList != nil && *prioritizedList != prioritizedListVal {
+					continue
+				}
+				for _, workloadResourceClaimsVal := range bools {
+					if workloadResourceClaims != nil && *workloadResourceClaims != workloadResourceClaimsVal {
+						continue
+					}
+					// WorkloadResourceClaims depends on GenericWorkload
+					if workloadResourceClaimsVal && !genericWorkloadVal {
+						continue
+					}
+					combos = append(combos, controllerFeatures{
+						AdminAccess:            adminAccessVal,
+						GenericWorkload:        genericWorkloadVal,
+						PrioritizedList:        prioritizedListVal,
+						WorkloadResourceClaims: workloadResourceClaimsVal,
+					})
+				}
+			}
+		}
+	}
+	return combos
 }
 
 func makeClaim(name, namespace string, owner *metav1.OwnerReference) *resourceapi.ResourceClaim {
