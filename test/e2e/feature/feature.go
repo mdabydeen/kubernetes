@@ -307,10 +307,6 @@ var (
 	// Node Problem Detect e2e tests in tree.
 	NodeProblemDetector = framework.WithFeature(framework.ValidFeatures.Add("NodeProblemDetector"))
 
-	// Owner: sig-node
-	// Tests aiming to verify oom_score functionality
-	OOMScoreAdj = framework.WithFeature(framework.ValidFeatures.Add("OOMScoreAdj"))
-
 	// Owner: sig-network
 	// Marks a single test that tests cluster DNS performance with many services.
 	PerformanceDNS = framework.WithFeature(framework.ValidFeatures.Add("PerformanceDNS"))
@@ -387,10 +383,6 @@ var (
 	// Marks tests of the asynchronous preemption (KEP-4832) that require the `SchedulerAsyncPreemption` feature gate.
 	SchedulerAsyncPreemption = framework.WithFeature(framework.ValidFeatures.Add("SchedulerAsyncPreemption"))
 
-	// Owner: sig-node
-	// TODO: document the feature (when to use this feature for a test)
-	SeccompDefault = framework.WithFeature(framework.ValidFeatures.Add("SeccompDefault"))
-
 	// Owner: sig-storage
 	// KEP: https://kep.k8s.io/3314
 	// Tests marked with this feature require:
@@ -416,10 +408,6 @@ var (
 	// Owner: sig-api-machinery
 	// TODO: document the feature (when to use this feature for a test)
 	StorageVersionAPI = framework.WithFeature(framework.ValidFeatures.Add("StorageVersionAPI"))
-
-	// Owner: sig-node
-	// SupplementalGroupsPolicy is used for testing the SupplementalGroupsPolicy feature.
-	SupplementalGroupsPolicy = framework.WithFeature(framework.ValidFeatures.Add("SupplementalGroupsPolicy"))
 
 	// The Swap feature tests must run on nodes with the swap memory allocated and kubelet swap enabled. KEP-2400 (Node Swap Support)
 	Swap = framework.WithFeature(framework.ValidFeatures.Add("NodeSwap"))

@@ -369,7 +369,8 @@ func LoadKuberc(kuberc string) (string, bool, error) {
 		explicitly = true
 	}
 
-	if kubeRCFile == RecommendedKubeRCFile && os.Getenv("KUBERC") != "" {
+	// Fall back to KUBERC only when --kuberc is not passed.
+	if !explicitly && os.Getenv("KUBERC") != "" {
 		kubeRCFile = os.Getenv("KUBERC")
 		explicitly = true
 	}
@@ -397,7 +398,7 @@ func DefaultGetPreferences(kuberc string, errOut io.Writer) (*config.Preference,
 	switch {
 	case preference != nil && runtime.IsStrictDecodingError(err):
 		// just warn about strict decoding errors if we got a usable Preference object back
-		fmt.Fprintf(errOut, "kuberc: ignoring strict decoding error in %s: %v", kubeRCFile, err) //nolint:errcheck
+		fmt.Fprintf(errOut, "kuberc: ignoring strict decoding error in %s: %v\n", kubeRCFile, err) //nolint:errcheck
 		return preference, nil
 
 	case explicitly && err != nil:
@@ -410,7 +411,7 @@ func DefaultGetPreferences(kuberc string, errOut io.Writer) (*config.Preference,
 
 	case !explicitly && err != nil:
 		// if not explicitly requested, only warn on any other error
-		fmt.Fprintf(errOut, "kuberc: no preferences loaded from %s: %v", kubeRCFile, err) //nolint:errcheck
+		fmt.Fprintf(errOut, "kuberc: no preferences loaded from %s: %v\n", kubeRCFile, err) //nolint:errcheck
 		return nil, nil
 
 	default:
@@ -437,7 +438,8 @@ func getExplicitKuberc(args []string) (string, error) {
 			}
 			return "", fmt.Errorf("kuberc file is not found")
 		} else if strings.Contains(arg, "--kuberc=") {
-			parg := strings.Split(arg, "=")
+			// Split only on the first "=", since the path itself may contain "=".
+			parg := strings.SplitN(arg, "=", 2)
 			if len(parg) > 1 && parg[1] != "" {
 				kubercPath = parg[1]
 				break

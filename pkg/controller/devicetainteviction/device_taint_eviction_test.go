@@ -45,6 +45,7 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientfeatures "k8s.io/client-go/features"
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/ktesting"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -57,7 +58,6 @@ import (
 	controllertestutil "k8s.io/kubernetes/pkg/controller/testutil"
 	"k8s.io/kubernetes/pkg/features"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
-	"k8s.io/kubernetes/test/utils/client-go/ktesting"
 )
 
 func init() {
@@ -616,6 +616,17 @@ var (
 				// its claim generated for it. Not used in practice.
 				ResourceClaimName: nil,
 			},
+		}
+		return pod
+	}()
+	podWithoutClaimsScheduled = st.MakePod().Name(podName).Namespace(namespace).
+					UID(podUID).
+					Node(nodeName).
+					Obj()
+	podWithExtendedResourceClaimInStatus = func() *v1.Pod {
+		pod := podWithoutClaimsScheduled.DeepCopy()
+		pod.Status.ExtendedResourceClaimStatus = &v1.PodExtendedResourceClaimStatus{
+			ResourceClaimName: claimName,
 		}
 		return pod
 	}()
@@ -1319,6 +1330,50 @@ func testController(tCtx ktesting.TContext) {
 			},
 			wantEvents: l(deletePodEvent),
 		},
+		"evict-pod-extended-resourceclaim": {
+			events: []any{
+				add(sliceTainted),
+				add(slice2),
+				add(inUseClaim),
+				add(podWithExtendedResourceClaimInStatus),
+			},
+			finalState: state{
+				slices:          l(sliceTainted, slice2),
+				allocatedClaims: l(ac(inUseClaim, newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0))),
+				deletePodAt:     evictMap{newObject(podWithExtendedResourceClaimInStatus): *newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0)},
+				queued:          MockState[workItem]{Ready: newWorkItems(podWithExtendedResourceClaimInStatus)},
+			},
+			wantEvents: l(deletePodEvent),
+		},
+		"evict-pod-extended-resourceclaim-status-update": {
+			initialState: state{
+				pods:            l(podWithoutClaimsScheduled),
+				slices:          l(sliceTainted, slice2),
+				allocatedClaims: l(ac(inUseClaim, newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0))),
+			},
+			events: []any{
+				update(podWithoutClaimsScheduled, podWithExtendedResourceClaimInStatus),
+			},
+			finalState: state{
+				slices:          l(sliceTainted, slice2),
+				allocatedClaims: l(ac(inUseClaim, newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0))),
+				deletePodAt:     evictMap{newObject(podWithExtendedResourceClaimInStatus): *newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0)},
+				queued:          MockState[workItem]{Ready: newWorkItems(podWithExtendedResourceClaimInStatus)},
+			},
+			wantEvents: l(deletePodEvent),
+		},
+		"no-evict-extended-resourceclaim-wrong-owner": {
+			events: []any{
+				add(sliceTainted),
+				add(slice2),
+				add(inUseClaimOld), // pod not the owner
+				add(podWithExtendedResourceClaimInStatus),
+			},
+			finalState: state{
+				slices:          l(sliceTainted, slice2),
+				allocatedClaims: l(ac(inUseClaimOld, newEvictionTime(taintTime, sliceTainted, sliceTainted.Spec.Devices[0].Name, 0))),
+			},
+		},
 		"evict-pod-later": {
 			events: []any{
 				add(sliceTainted),
@@ -1471,6 +1526,32 @@ func testController(tCtx ktesting.TContext) {
 					claim.Status.Allocation.Devices.Results[0].Tolerations = []resourceapi.DeviceToleration{{
 						Operator: resourceapi.DeviceTolerationOpExists,
 						Effect:   resourceapi.DeviceTaintEffectNoExecute,
+					}}
+					return claim
+				}())),
+			},
+			process: []step{{pods: l(podWithClaimName)}},
+		},
+		"no-evict-pod-toleration-forever-any-effect": {
+			events: []any{
+				add(sliceTainted),
+				add(slice2),
+				add(func() *resourceapi.ResourceClaim {
+					claim := inUseClaim.DeepCopy()
+					// An empty effect matches all taint effects, same as for node taints.
+					claim.Status.Allocation.Devices.Results[0].Tolerations = []resourceapi.DeviceToleration{{
+						Operator: resourceapi.DeviceTolerationOpExists,
+					}}
+					return claim
+				}()),
+				add(podWithClaimName),
+			},
+			finalState: state{
+				slices: l(sliceTainted, slice2),
+				allocatedClaims: l(ac(func() *resourceapi.ResourceClaim {
+					claim := inUseClaim.DeepCopy()
+					claim.Status.Allocation.Devices.Results[0].Tolerations = []resourceapi.DeviceToleration{{
+						Operator: resourceapi.DeviceTolerationOpExists,
 					}}
 					return claim
 				}())),

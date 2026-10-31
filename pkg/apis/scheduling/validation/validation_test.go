@@ -124,8 +124,8 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 	}
 
 	errorCases := map[string]struct {
-		P scheduling.PriorityClass
-		T field.ErrorType
+		P            scheduling.PriorityClass
+		expectedErrs field.ErrorList
 	}{
 		"add namespace": {
 			P: scheduling.PriorityClass{
@@ -133,7 +133,9 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 				Value:            100,
 				PreemptionPolicy: &preemptLowerPriority,
 			},
-			T: field.ErrorTypeInvalid,
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.namespace"), nil, "field is immutable").WithOrigin("immutable"),
+			},
 		},
 		"change name": {
 			P: scheduling.PriorityClass{
@@ -141,14 +143,18 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 				Value:            100,
 				PreemptionPolicy: &preemptLowerPriority,
 			},
-			T: field.ErrorTypeInvalid,
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("metadata.name"), nil, "field is immutable"),
+			},
 		},
 		"remove value": {
 			P: scheduling.PriorityClass{
 				ObjectMeta:       metav1.ObjectMeta{Name: "tier1", Namespace: "", ResourceVersion: "2"},
 				PreemptionPolicy: &preemptLowerPriority,
 			},
-			T: field.ErrorTypeForbidden,
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("value"), nil, "field is immutable").WithOrigin("immutable"),
+			},
 		},
 		"change value": {
 			P: scheduling.PriorityClass{
@@ -156,7 +162,9 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 				Value:            101,
 				PreemptionPolicy: &preemptLowerPriority,
 			},
-			T: field.ErrorTypeForbidden,
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("value"), nil, "field is immutable").WithOrigin("immutable"),
+			},
 		},
 		"change preemptionPolicy": {
 			P: scheduling.PriorityClass{
@@ -164,7 +172,9 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 				Value:            100,
 				PreemptionPolicy: &preemptNever,
 			},
-			T: field.ErrorTypeInvalid,
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("preemptionPolicy"), nil, "field is immutable"),
+			},
 		},
 	}
 
@@ -174,11 +184,8 @@ func TestValidatePriorityClassUpdate(t *testing.T) {
 			t.Errorf("Expected error for %s, but it succeeded", k)
 			continue
 		}
-		for i := range errs {
-			if errs[i].Type != v.T {
-				t.Errorf("%s: expected errors to have type %s: %v", k, v.T, errs[i])
-			}
-		}
+		matcher := field.ErrorMatcher{}.ByType().ByField().ByOrigin().ByDetailSubstring()
+		matcher.Test(t, v.expectedErrs, errs)
 	}
 }
 
@@ -193,6 +200,219 @@ func TestValidateWorkload(t *testing.T) {
 		}),
 		"no composite pod group scheduling constraints": mkWorkload(func(w *scheduling.Workload) {
 			w.Spec.CompositePodGroupTemplates[1].SchedulingConstraints = nil
+		}),
+		"composite pod group template with basic scheduling policy having direct and indirect children with basic scheduling policy": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedbasic",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepbasic",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Basic: &scheduling.BasicSchedulingPolicy{},
+					},
+				}},
+			}}
+		}),
+		"composite pod group template with basic scheduling policy having direct and indirect children with gang scheduling policy": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+				Gang: &scheduling.GangSchedulingPolicy{MinCount: 2},
+			}
+			w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedgang",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepgang",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Gang: &scheduling.GangSchedulingPolicy{MinCount: 2},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 2},
+					},
+				}},
+			}}
+		}),
+		"composite pod group template with gang scheduling policy having direct and indirect children with gang scheduling policy": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedgang",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepgang",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Gang: &scheduling.GangSchedulingPolicy{MinCount: 2},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Gang: &scheduling.GangSchedulingPolicy{MinCount: 2},
+					},
+				}},
+			}}
+		}),
+		"composite pod group template with single disruption mode having direct and indirect children with single disruption mode": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+				Single: &scheduling.SingleCompositeDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+				Single: &scheduling.SingleDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedsingle",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+				},
+				DisruptionMode: &scheduling.CompositeDisruptionMode{
+					Single: &scheduling.SingleCompositeDisruptionMode{},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepsingle",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						Single: &scheduling.SingleCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+						DisruptionMode: &scheduling.DisruptionMode{
+							Single: &scheduling.SingleDisruptionMode{},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Basic: &scheduling.BasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.DisruptionMode{
+						Single: &scheduling.SingleDisruptionMode{},
+					},
+				}},
+			}}
+		}),
+		"composite pod group template with single disruption mode having direct and indirect children with all disruption mode": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+				Single: &scheduling.SingleCompositeDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+				All: &scheduling.AllDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedall",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+				},
+				DisruptionMode: &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+						DisruptionMode: &scheduling.DisruptionMode{
+							All: &scheduling.AllDisruptionMode{},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Basic: &scheduling.BasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.DisruptionMode{
+						All: &scheduling.AllDisruptionMode{},
+					},
+				}},
+			}}
+		}),
+		"composite pod group template with all disruption mode having direct and indirect children with all disruption mode": mkWorkload(func(w *scheduling.Workload) {
+			w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+				All: &scheduling.AllCompositeDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+				All: &scheduling.AllDisruptionMode{},
+			}
+			w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+				Name: "nestedall",
+				SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+					Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+				},
+				DisruptionMode: &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				},
+				CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+					Name: "deepall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "deepleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+						DisruptionMode: &scheduling.DisruptionMode{
+							All: &scheduling.AllDisruptionMode{},
+						},
+					}},
+				}},
+				PodGroupTemplates: []scheduling.PodGroupTemplate{{
+					Name: "nestedleaf",
+					SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+						Basic: &scheduling.BasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.DisruptionMode{
+						All: &scheduling.AllDisruptionMode{},
+					},
+				}},
+			}}
 		}),
 	}
 	for name, workload := range successCases {
@@ -228,6 +448,523 @@ func TestValidateWorkload(t *testing.T) {
 			}),
 			expectedErrs: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0), "sub", "must have at least one child PodGroupTemplate or CompositePodGroupTemplate"),
+			},
+		},
+		"composite pod group template with gang policy having a direct child pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicSchedulingPolicy{},
+				}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having a direct child composite pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedbasic",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having an indirect child pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedgang",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedbasicleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having an indirect child composite pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedgang",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Gang: &scheduling.CompositeGangSchedulingPolicy{MinGroupCount: 2},
+					},
+					CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+						Name: "deepbasic",
+						SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+							Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+						},
+						PodGroupTemplates: []scheduling.PodGroupTemplate{{
+							Name: "deepleaf",
+							SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+								Basic: &scheduling.BasicSchedulingPolicy{},
+							},
+						}},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having both child composite pod group template and child pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicSchedulingPolicy{},
+				}
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedbasic",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with both basic and gang policy having a direct child pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].SchedulingPolicy.Basic = &scheduling.CompositeBasicSchedulingPolicy{}
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicSchedulingPolicy{},
+				}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having a direct child pod group template with empty policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with both basic and gang policy having a direct child composite pod group template with basic policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].SchedulingPolicy.Basic = &scheduling.CompositeBasicSchedulingPolicy{}
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedbasic",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with gang policy having a direct child composite pod group template with empty policy": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name:             "nestedempty",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					Single: &scheduling.SingleDisruptionMode{},
+				}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child pod group template with unset disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = nil
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with both single and all disruption mode having a direct child pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					Single: &scheduling.SingleCompositeDisruptionMode{},
+					All:    &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					Single: &scheduling.SingleDisruptionMode{},
+				}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child pod group template with empty disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with both single and all disruption mode having a direct child composite pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					Single: &scheduling.SingleCompositeDisruptionMode{},
+					All:    &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedsingle",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						Single: &scheduling.SingleCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child composite pod group template with empty disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedempty",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child composite pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedsingle",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						Single: &scheduling.SingleCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having a direct child composite pod group template with unset disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedunset",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: nil,
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having an indirect child pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedsingleleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+						DisruptionMode: &scheduling.DisruptionMode{
+							Single: &scheduling.SingleDisruptionMode{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having an indirect child pod group template with unset disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedunsetleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+						DisruptionMode: nil,
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having an indirect child composite pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+						Name: "deepsingle",
+						SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+							Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+						},
+						DisruptionMode: &scheduling.CompositeDisruptionMode{
+							Single: &scheduling.SingleCompositeDisruptionMode{},
+						},
+						PodGroupTemplates: []scheduling.PodGroupTemplate{{
+							Name: "deepleaf",
+							SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+								Basic: &scheduling.BasicSchedulingPolicy{},
+							},
+						}},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having an indirect child composite pod group template with unset disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedall",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						All: &scheduling.AllCompositeDisruptionMode{},
+					},
+					CompositePodGroupTemplates: []scheduling.CompositePodGroupTemplate{{
+						Name: "deepunset",
+						SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+							Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+						},
+						DisruptionMode: nil,
+						PodGroupTemplates: []scheduling.PodGroupTemplate{{
+							Name: "deepleaf",
+							SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+								Basic: &scheduling.BasicSchedulingPolicy{},
+							},
+						}},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with all disruption mode having both child composite pod group template and child pod group template with single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[0].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					Single: &scheduling.SingleDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[0].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedsingle",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						Single: &scheduling.SingleCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(0).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with gang policy and all disruption mode having a direct child pod group template with basic policy and single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].SchedulingPolicy = scheduling.PodGroupSchedulingPolicy{
+					Basic: &scheduling.BasicSchedulingPolicy{},
+				}
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					Single: &scheduling.SingleDisruptionMode{},
+				}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("podGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
+			},
+		},
+		"composite pod group template with gang policy and all disruption mode having a direct child composite pod group template with basic policy and single disruption mode": {
+			workload: mkWorkload(func(w *scheduling.Workload) {
+				w.Spec.CompositePodGroupTemplates[1].DisruptionMode = &scheduling.CompositeDisruptionMode{
+					All: &scheduling.AllCompositeDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[1].PodGroupTemplates[0].DisruptionMode = &scheduling.DisruptionMode{
+					All: &scheduling.AllDisruptionMode{},
+				}
+				w.Spec.CompositePodGroupTemplates[1].CompositePodGroupTemplates = []scheduling.CompositePodGroupTemplate{{
+					Name: "nestedbasicsingle",
+					SchedulingPolicy: scheduling.CompositePodGroupSchedulingPolicy{
+						Basic: &scheduling.CompositeBasicSchedulingPolicy{},
+					},
+					DisruptionMode: &scheduling.CompositeDisruptionMode{
+						Single: &scheduling.SingleCompositeDisruptionMode{},
+					},
+					PodGroupTemplates: []scheduling.PodGroupTemplate{{
+						Name: "nestedleaf",
+						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
+							Basic: &scheduling.BasicSchedulingPolicy{},
+						},
+					}},
+				}}
+			}),
+			expectedErrs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("schedulingPolicy"), nil, `must have "gang" scheduling policy when parent compositePodGroupTemplate has "gang" scheduling policy`),
+				field.Invalid(field.NewPath("spec", "compositePodGroupTemplates").Index(1).Child("compositePodGroupTemplates").Index(0).Child("disruptionMode"), nil, `must have "all" disruption mode when parent compositePodGroupTemplate has "all" disruption mode`),
 			},
 		},
 		"no name": {
@@ -483,7 +1220,9 @@ func mkWorkload(tweaks ...func(w *scheduling.Workload)) *scheduling.Workload {
 					{
 						Name: "childgroup2",
 						SchedulingPolicy: scheduling.PodGroupSchedulingPolicy{
-							Basic: &scheduling.BasicSchedulingPolicy{},
+							Gang: &scheduling.GangSchedulingPolicy{
+								MinCount: 2,
+							},
 						},
 						SchedulingConstraints: &scheduling.PodGroupSchedulingConstraints{
 							Topology: []scheduling.TopologyConstraint{

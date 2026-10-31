@@ -1235,7 +1235,8 @@ func (tc *Controller) claimEvictionTime(claim *resourceapi.ResourceClaim) *evict
 			haveToleration := false
 			tolerationSeconds := int64(math.MaxInt64)
 			for _, toleration := range allocatedDevice.Tolerations {
-				if toleration.Effect == resourceapi.DeviceTaintEffectNoExecute &&
+				// An empty effect matches all taint effects, including NoExecute.
+				if (toleration.Effect == "" || toleration.Effect == resourceapi.DeviceTaintEffectNoExecute) &&
 					resourceclaim.ToleratesTaint(toleration, *taint.deviceTaint()) {
 					if toleration.TolerationSeconds == nil {
 						// Tolerate forever -> ignore taint.
@@ -1257,12 +1258,12 @@ func (tc *Controller) claimEvictionTime(claim *resourceapi.ResourceClaim) *evict
 			taints.Insert(taint)
 			if when == nil {
 				when = newEvictionTime
-				tc.logger.V(5).Info("Claim is affected by device taint", "claim", klog.KObj(claim), "device", allocatedDevice, "taint", taint, "evictionTime", when)
+				tc.logger.V(5).Info("Claim is affected by device taint", "claim", klog.KObj(claim), "device", allocatedDevice, "taint", taint, "evictionTime", klog.SafePtr(when))
 				continue
 			}
 			if newEvictionTime != nil && newEvictionTime.Before(when) {
 				when = newEvictionTime
-				tc.logger.V(5).Info("Claim is affected by device taint", "claim", klog.KObj(claim), "device", allocatedDevice, "taint", taint, "evictionTime", when)
+				tc.logger.V(5).Info("Claim is affected by device taint", "claim", klog.KObj(claim), "device", allocatedDevice, "taint", taint, "evictionTime", klog.SafePtr(when))
 			}
 		}
 	}
@@ -1497,7 +1498,8 @@ func (tc *Controller) handlePodChange(oldPod, newPod *v1.Pod) {
 	// to it.
 	if oldPod != nil &&
 		oldPod.Spec.NodeName == newPod.Spec.NodeName &&
-		apiequality.Semantic.DeepEqual(oldPod.Status.ResourceClaimStatuses, newPod.Status.ResourceClaimStatuses) {
+		resourceclaim.PodStatusEqual(oldPod.Status.ResourceClaimStatuses, newPod.Status.ResourceClaimStatuses) &&
+		resourceclaim.PodExtendedStatusEqual(oldPod.Status.ExtendedResourceClaimStatus, newPod.Status.ExtendedResourceClaimStatus) {
 		return
 	}
 
@@ -1533,7 +1535,7 @@ func (tc *Controller) handlePods(claim *resourceapi.ResourceClaim) {
 			podGroupKey := claim.Namespace + "/" + consumer.Name
 			pods, err := tc.podInformer.Informer().GetIndexer().ByIndex(podGroupIndex, podGroupKey)
 			if err != nil {
-				utilruntime.HandleErrorWithLogger(tc.logger, err, "retrieve Pods for PodGroup %s from cache", podGroupKey)
+				utilruntime.HandleErrorWithLogger(tc.logger, err, "retrieve Pods for PodGroup from cache", "podGroup", klog.KRef(claim.Namespace, consumer.Name))
 				continue
 			}
 			for _, obj := range pods {
@@ -1578,17 +1580,8 @@ func (tc *Controller) podEvictionTime(pod *v1.Pod) *evictionAndReason {
 	// If any claim in use by the pod is tainted such that the taint is not tolerated,
 	// the pod needs to be evicted.
 	var eviction *evictionAndReason
-	for i := range pod.Spec.ResourceClaims {
-		claimName, mustCheckOwner, err := resourceclaim.Name(pod, &pod.Spec.ResourceClaims[i])
-		if err != nil {
-			// Not created yet or unsupported. Definitely not tainted.
-			continue
-		}
-		if claimName == nil {
-			// Claim not needed.
-			continue
-		}
-		allocatedClaim, ok := tc.allocatedClaims[types.NamespacedName{Namespace: pod.Namespace, Name: *claimName}]
+	for claimName, mustCheckOwner := range resourceclaim.PodClaims(pod) {
+		allocatedClaim, ok := tc.allocatedClaims[types.NamespacedName{Namespace: pod.Namespace, Name: claimName}]
 		if !ok {
 			// Referenced, but not found or not allocated. Also not tainted.
 			continue

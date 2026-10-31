@@ -754,21 +754,11 @@ func dropDisabledFields(
 		podSpec.HostUsers = nil
 	}
 
-	// If the feature is disabled and not in use, drop the SupplementalGroupsPolicy field.
-	if !utilfeature.DefaultFeatureGate.Enabled(features.SupplementalGroupsPolicy) && !supplementalGroupsPolicyInUse(oldPodSpec) {
-		// Drop the field in podSpec only if SecurityContext is not nil.
-		// If it is nil, there is no need to set supplementalGroupsPolicy=nil (it will be nil too).
-		if podSpec.SecurityContext != nil {
-			podSpec.SecurityContext.SupplementalGroupsPolicy = nil
-		}
-	}
-
 	dropDisabledPodLevelResources(podSpec, oldPodSpec)
 	dropDisabledProcMountField(podSpec, oldPodSpec)
 
 	dropDisabledNodeInclusionPolicyFields(podSpec, oldPodSpec)
 	dropDisabledMatchLabelKeysFieldInTopologySpread(podSpec, oldPodSpec)
-	dropDisabledMatchLabelKeysFieldInPodAffinity(podSpec, oldPodSpec)
 	dropDisabledClusterTrustBundleProjection(podSpec, oldPodSpec)
 	dropDisabledPodCertificateProjection(podSpec, oldPodSpec)
 	dropDisabledAtomicWriteVolumeUserFields(podSpec, oldPodSpec)
@@ -1113,18 +1103,6 @@ func dropDisabledPodStatusFields(podStatus, oldPodStatus *api.PodStatus, podSpec
 		dropMessageField(podStatus.EphemeralContainerStatuses)
 	}
 
-	// drop ContainerStatus.User field to empty (disable SupplementalGroupsPolicy)
-	if !utilfeature.DefaultFeatureGate.Enabled(features.SupplementalGroupsPolicy) && !supplementalGroupsPolicyInUse(oldPodSpec) {
-		dropUserField := func(csl []api.ContainerStatus) {
-			for i := range csl {
-				csl[i].User = nil
-			}
-		}
-		dropUserField(podStatus.InitContainerStatuses)
-		dropUserField(podStatus.ContainerStatuses)
-		dropUserField(podStatus.EphemeralContainerStatuses)
-	}
-
 	if !utilfeature.DefaultFeatureGate.Enabled(features.PodObservedGenerationTracking) && !podObservedGenerationTrackingInUse(oldPodStatus) {
 		podStatus.ObservedGeneration = 0
 		for i := range podStatus.Conditions {
@@ -1263,23 +1241,6 @@ func dropDisabledNodeInclusionPolicyFields(podSpec, oldPodSpec *api.PodSpec) {
 	}
 }
 
-// dropDisabledMatchLabelKeysFieldInPodAffinity removes disabled fields from PodSpec related
-// to MatchLabelKeys in required/preferred PodAffinity/PodAntiAffinity only if it is not already used by the old spec.
-func dropDisabledMatchLabelKeysFieldInPodAffinity(podSpec, oldPodSpec *api.PodSpec) {
-	if podSpec == nil || podSpec.Affinity == nil || utilfeature.DefaultFeatureGate.Enabled(features.MatchLabelKeysInPodAffinity) || matchLabelKeysFieldInPodAffinityInUse(oldPodSpec) {
-		return
-	}
-
-	if affinity := podSpec.Affinity.PodAffinity; affinity != nil {
-		dropMatchLabelKeysFieldInPodAffnityTerm(affinity.RequiredDuringSchedulingIgnoredDuringExecution)
-		dropMatchLabelKeysFieldInWeightedPodAffnityTerm(affinity.PreferredDuringSchedulingIgnoredDuringExecution)
-	}
-	if antiaffinity := podSpec.Affinity.PodAntiAffinity; antiaffinity != nil {
-		dropMatchLabelKeysFieldInPodAffnityTerm(antiaffinity.RequiredDuringSchedulingIgnoredDuringExecution)
-		dropMatchLabelKeysFieldInWeightedPodAffnityTerm(antiaffinity.PreferredDuringSchedulingIgnoredDuringExecution)
-	}
-}
-
 // dropDisabledMatchLabelKeysFieldInTopologySpread removes disabled fields from PodSpec related
 // to MatchLabelKeys in TopologySpread only if it is not already used by the old spec.
 func dropDisabledMatchLabelKeysFieldInTopologySpread(podSpec, oldPodSpec *api.PodSpec) {
@@ -1287,22 +1248,6 @@ func dropDisabledMatchLabelKeysFieldInTopologySpread(podSpec, oldPodSpec *api.Po
 		for i := range podSpec.TopologySpreadConstraints {
 			podSpec.TopologySpreadConstraints[i].MatchLabelKeys = nil
 		}
-	}
-}
-
-// dropMatchLabelKeysFieldInWeightedPodAffnityTerm removes MatchLabelKeys and MismatchLabelKeys fields from WeightedPodAffinityTerm
-func dropMatchLabelKeysFieldInWeightedPodAffnityTerm(terms []api.WeightedPodAffinityTerm) {
-	for i := range terms {
-		terms[i].PodAffinityTerm.MatchLabelKeys = nil
-		terms[i].PodAffinityTerm.MismatchLabelKeys = nil
-	}
-}
-
-// dropMatchLabelKeysFieldInPodAffnityTerm removes MatchLabelKeys and MismatchLabelKeys fields from PodAffinityTerm
-func dropMatchLabelKeysFieldInPodAffnityTerm(terms []api.PodAffinityTerm) {
-	for i := range terms {
-		terms[i].MatchLabelKeys = nil
-		terms[i].MismatchLabelKeys = nil
 	}
 }
 
@@ -1318,43 +1263,6 @@ func dropUserFieldsInDownwardAPIVolumeFiles(items []api.DownwardAPIVolumeFile) {
 	for j := range items {
 		items[j].User = nil
 	}
-}
-
-// matchLabelKeysFieldInPodAffinityInUse returns true if given affinityTerms have MatchLabelKeys field set.
-func matchLabelKeysFieldInPodAffinityInUse(podSpec *api.PodSpec) bool {
-	if podSpec == nil || podSpec.Affinity == nil {
-		return false
-	}
-
-	if affinity := podSpec.Affinity.PodAffinity; affinity != nil {
-		for _, c := range affinity.RequiredDuringSchedulingIgnoredDuringExecution {
-			if len(c.MatchLabelKeys) > 0 || len(c.MismatchLabelKeys) > 0 {
-				return true
-			}
-		}
-
-		for _, c := range affinity.PreferredDuringSchedulingIgnoredDuringExecution {
-			if len(c.PodAffinityTerm.MatchLabelKeys) > 0 || len(c.PodAffinityTerm.MismatchLabelKeys) > 0 {
-				return true
-			}
-		}
-	}
-
-	if antiAffinity := podSpec.Affinity.PodAntiAffinity; antiAffinity != nil {
-		for _, c := range antiAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
-			if len(c.MatchLabelKeys) > 0 || len(c.MismatchLabelKeys) > 0 {
-				return true
-			}
-		}
-
-		for _, c := range antiAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
-			if len(c.PodAffinityTerm.MatchLabelKeys) > 0 || len(c.PodAffinityTerm.MismatchLabelKeys) > 0 {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // matchLabelKeysInTopologySpreadInUse returns true if the pod spec is non-nil
@@ -1403,10 +1311,6 @@ func nodeTaintsPolicyInUse(podSpec *api.PodSpec) bool {
 // hostUsersInUse returns true if the pod spec has spec.hostUsers field set.
 func hostUsersInUse(podSpec *api.PodSpec) bool {
 	return podSpec != nil && podSpec.HostUsers != nil
-}
-
-func supplementalGroupsPolicyInUse(podSpec *api.PodSpec) bool {
-	return podSpec != nil && podSpec.SecurityContext != nil && podSpec.SecurityContext.SupplementalGroupsPolicy != nil
 }
 
 func podObservedGenerationTrackingInUse(podStatus *api.PodStatus) bool {

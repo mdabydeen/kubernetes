@@ -22,7 +22,6 @@ import (
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -219,7 +218,7 @@ func NewSnapshot(pods []*v1.Pod, nodes []*v1.Node) *Snapshot {
 
 // NewTestSnapshotWithPodGroups initializes a Snapshot struct with pod groups and composite pod groups and returns it.
 // It should be used only in the tests.
-func NewTestSnapshotWithPodGroups(pods []*v1.Pod, nodes []*v1.Node, podGroups []*schedulingv1beta1.PodGroup, compositePodGroups []*schedulingv1alpha3.CompositePodGroup) *Snapshot {
+func NewTestSnapshotWithPodGroups(pods []*v1.Pod, nodes []*v1.Node, podGroups []*schedulingv1beta1.PodGroup, compositePodGroups []*schedulingv1beta1.CompositePodGroup) *Snapshot {
 	s := NewSnapshot(pods, nodes)
 	genericPodGroups := make([]*fwk.GenericPodGroup, 0, len(compositePodGroups)+len(podGroups))
 	for _, cpg := range compositePodGroups {
@@ -436,7 +435,7 @@ type compositePodGroupSnapshotListerImpl struct {
 	snapshot *Snapshot
 }
 
-func (l *compositePodGroupSnapshotListerImpl) Get(namespace string, name string) (*schedulingv1alpha3.CompositePodGroup, error) {
+func (l *compositePodGroupSnapshotListerImpl) Get(namespace string, name string) (*schedulingv1beta1.CompositePodGroup, error) {
 	if !l.snapshot.compositePodGroupEnabled {
 		return nil, fmt.Errorf("composite pod group feature gate is disabled")
 	}
@@ -891,54 +890,6 @@ func removeNodeInfoFromList(logger klog.Logger, list []fwk.NodeInfo, nodeInfoToR
 	}
 	logger.Error(nil, "NodeInfo not found in the list", "nodeInfo", nodeInfoToRemove)
 	return list
-}
-
-// GetRootKeyForGroup returns the root key of the given EntityKey.
-// The key must be of PodGroupKey or CompositePodGroupKey type.
-func (s *Snapshot) GetRootKeyForGroup(key fwk.EntityKey) (fwk.EntityKey, bool, error) {
-	currentKey := key
-	visited := sets.New[fwk.EntityKey]()
-	for {
-		if visited.Has(currentKey) {
-			return fwk.EntityKey{}, false, fmt.Errorf("cycle detected in the hierarchy: %v", visited.UnsortedList())
-		}
-		visited.Insert(currentKey)
-
-		switch currentKey.Type {
-		case fwk.PodGroupKeyType:
-			pgs, ok := s.podGroupStates[currentKey]
-			if !ok {
-				return fwk.EntityKey{}, false, nil
-			}
-			pg := pgs.podGroup
-			if pg == nil {
-				return fwk.EntityKey{}, false, nil
-			}
-			if !s.compositePodGroupEnabled || pg.Spec.ParentCompositePodGroupName == nil {
-				return currentKey, true, nil
-			}
-			currentKey = fwk.CompositePodGroupKey(pg.Namespace, *pg.Spec.ParentCompositePodGroupName)
-		case fwk.CompositePodGroupKeyType:
-			cpgs, ok := s.compositePodGroupStates[currentKey]
-			if !ok {
-				return fwk.EntityKey{}, false, nil
-			}
-			cpg := cpgs.compositePodGroup
-			if cpg == nil {
-				return fwk.EntityKey{}, false, nil
-			}
-			if cpg.Spec.ParentCompositePodGroupName == nil {
-				return currentKey, true, nil
-			}
-			currentKey = fwk.CompositePodGroupKey(cpg.Namespace, *cpg.Spec.ParentCompositePodGroupName)
-		case fwk.PodKeyType:
-			return fwk.EntityKey{}, false, fmt.Errorf("pod key type not supported in snapshot GetRootKeyForGroup for %s", currentKey.String())
-		}
-	}
-}
-
-func (s *Snapshot) BuildHierarchySnapshotFromPod(pod *v1.Pod) (fwk.PodGroupManager, error) {
-	return s, nil
 }
 
 // AddGenericPodGroup adds generic pod group object to the snapshot,

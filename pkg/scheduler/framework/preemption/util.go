@@ -17,16 +17,13 @@ limitations under the License.
 package preemption
 
 import (
-	"iter"
+	"cmp"
 
 	v1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1"
-	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/sets"
 	policylisters "k8s.io/client-go/listers/policy/v1"
-	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
 	fwk "k8s.io/kube-scheduler/framework"
 )
 
@@ -66,19 +63,8 @@ func PodTerminatingByPreemption(p *v1.Pod) bool {
 //     If group types and sizes are equal, the group that started earlier (has the oldest pod)
 //     is more important.
 func MoreImportantVictim(vi1, vi2 Victim) bool {
-	if vi1.Priority() != vi2.Priority() {
-		return vi1.Priority() > vi2.Priority()
-	}
-
-	rank1 := victimRank(vi1)
-	rank2 := victimRank(vi2)
-
-	if rank1 != rank2 {
-		return rank1 > rank2
-	}
-
-	if len(vi1.Pods()) != len(vi2.Pods()) {
-		return len(vi1.Pods()) > len(vi2.Pods())
+	if c := compareVictimStructuralImportance(vi1, vi2); c != 0 {
+		return c > 0
 	}
 
 	t1, t2 := vi1.EarliestStartTime(), vi2.EarliestStartTime()
@@ -107,83 +93,100 @@ func victimRank(vi Victim) int {
 	}
 }
 
-// traverseHierarchyUp traverses the hierarchy of PodGroups/CompositePodGroups upward from startKey.
-// If the next parent is missing, or cannot be listed, the traversal stops.
-// This method assumes that GenericWorkload feature gate is enabled.
-// The cpgLister should be non-nil only if the CompositePodGroup feature gate is enabled.
-// TODO: log/return an error if there is a gap in the hierarchy.
-func traverseHierarchyUp(
-	namespace string,
-	startKey fwk.EntityKey,
-	pgLister fwk.PodGroupLister,
-	cpgLister fwk.CompositePodGroupLister,
-) iter.Seq[*fwk.GenericPodGroup] {
-	return func(yield func(*fwk.GenericPodGroup) bool) {
-		currentKey := startKey
-		visited := sets.New[fwk.EntityKey]()
-		for range schedulingv1beta1.WorkloadMaxTreeDepth {
-			if visited.Has(currentKey) {
-				break
-			}
-			visited.Insert(currentKey)
-
-			var gpg *fwk.GenericPodGroup
-			switch currentKey.Type {
-			case fwk.PodGroupKeyType:
-				pg, err := pgLister.Get(namespace, currentKey.Name)
-				if err != nil {
-					return
-				}
-				gpg = fwk.NewGenericPodGroup(pg)
-
-			case fwk.CompositePodGroupKeyType:
-				cpg, err := cpgLister.Get(namespace, currentKey.Name)
-				if err != nil {
-					return
-				}
-				gpg = fwk.NewGenericCompositePodGroup(cpg)
-
-			default:
-				return
-			}
-
-			if !yield(gpg) {
-				return
-			}
-
-			if cpgLister == nil {
-				return
-			}
-			parentKey, hasParent := gpg.GetParentKey()
-			if !hasParent {
-				return
-			}
-			currentKey = parentKey
-		}
+// compareVictimStructuralImportance compares two victims on structural importance:
+// Priority, Workload Type Rank (CompositePodGroup > PodGroup > Pod), and Group Size.
+// Returns > 0 if vi1 is more important, < 0 if vi2 is more important, and 0 if equal.
+func compareVictimStructuralImportance(vi1, vi2 Victim) int {
+	if c := cmp.Compare(vi1.Priority(), vi2.Priority()); c != 0 {
+		return c
 	}
+	if c := cmp.Compare(victimRank(vi1), victimRank(vi2)); c != 0 {
+		return c
+	}
+	return cmp.Compare(len(vi1.Pods()), len(vi2.Pods()))
 }
 
-// getPodPriority returns the effective preemption priority of a pod. If the pod belongs to
-// a pod group or composite pod group hierarchy, it returns the priority of the root group of the hierarchy.
-// If podGroupLister is nil or the pod does not belong to a pod group, it returns the pod's own priority.
-// If compositePodGroupLister is nil or a parent composite pod group in the hierarchy is not found,
-// it falls back to the priority of the last successfully resolved group (or the pod's own priority).
-// TODO: log/return an error if there is a gap in the hierarchy.
-func getPodPriority(p *v1.Pod, podGroupLister fwk.PodGroupLister, compositePodGroupLister fwk.CompositePodGroupLister) int32 {
-	if p.Spec.SchedulingGroup == nil || podGroupLister == nil {
-		return corev1helpers.PodPriority(p)
-	}
-	startKey := fwk.PodGroupKey(p.Namespace, *p.Spec.SchedulingGroup.PodGroupName)
-	var lastGPG *fwk.GenericPodGroup
-
-	for gpg := range traverseHierarchyUp(p.Namespace, startKey, podGroupLister, compositePodGroupLister) {
-		lastGPG = gpg
+// CompareVictimSets compares the preemption cost of two sets of victims (each sorted
+// descending by MoreImportantVictim).
+// Returns < 0 if set1 is less costly (better to preempt) than set2,
+// > 0 if set1 is more costly (worse to preempt) than set2,
+// and 0 if both sets have equal preemption cost.
+func CompareVictimSets(set1, set2 []fwk.PreemptionVictim) int {
+	if len(set1) == 0 || len(set2) == 0 {
+		return cmp.Compare(len(set1), len(set2))
 	}
 
-	if lastGPG != nil {
-		return lastGPG.GetPriority()
+	// TODO(#142718): NumPDBViolations() is computed statically across all potential victims
+	// in the domain, which is exact for DisruptionsAllowed == 0 but can miscount when
+	// DisruptionsAllowed > 0 and earlier victims sharing the same PDB were not condemned.
+	// Track DisruptionsAllowed dynamically in PodGroupPreemptionState.
+	var pdb1, pdb2 int
+	for _, v := range set1 {
+		pdb1 += v.NumPDBViolations()
 	}
-	return corev1helpers.PodPriority(p)
+	for _, v := range set2 {
+		pdb2 += v.NumPDBViolations()
+	}
+	if c := cmp.Compare(pdb1, pdb2); c != 0 {
+		return c
+	}
+
+	for i1, i2 := 0, 0; i1 < len(set1) && i2 < len(set2); {
+		vi1, ok1 := set1[i1].(Victim)
+		vi2, ok2 := set2[i2].(Victim)
+		if !ok1 || !ok2 {
+			break
+		}
+		p1, p2 := vi1.Priority(), vi2.Priority()
+		if c := cmp.Compare(p1, p2); c != 0 {
+			return c
+		}
+		var prioPods1, prioPods2 int
+		for ; i1 < len(set1); i1++ {
+			v, ok := set1[i1].(Victim)
+			if !ok || v.Priority() != p1 {
+				break
+			}
+			prioPods1 += len(v.Pods())
+		}
+		for ; i2 < len(set2); i2++ {
+			v, ok := set2[i2].(Victim)
+			if !ok || v.Priority() != p2 {
+				break
+			}
+			prioPods2 += len(v.Pods())
+		}
+		if c := cmp.Compare(prioPods1, prioPods2); c != 0 {
+			return c
+		}
+	}
+
+	var pods1, pods2 int
+	for _, v := range set1 {
+		pods1 += len(v.Pods())
+	}
+	for _, v := range set2 {
+		pods2 += len(v.Pods())
+	}
+	if c := cmp.Compare(pods1, pods2); c != 0 {
+		return c
+	}
+
+	minLen := min(len(set1), len(set2))
+	for i := range minLen {
+		vi1, ok1 := set1[i].(Victim)
+		vi2, ok2 := set2[i].(Victim)
+		if ok1 && ok2 {
+			if c := cmp.Compare(victimRank(vi1), victimRank(vi2)); c != 0 {
+				return c
+			}
+			if c := cmp.Compare(len(vi1.Pods()), len(vi2.Pods())); c != 0 {
+				return c
+			}
+		}
+	}
+
+	return cmp.Compare(len(set1), len(set2))
 }
 
 // FilterVictimsWithPDBViolation groups "victims" into "violatingVictims"

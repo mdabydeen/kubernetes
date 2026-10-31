@@ -524,11 +524,18 @@ type NodeAllocatableMapping struct {
 	// (for a specific claim allocation) determines the base quantity for
 	// the node allocatable resource. `capacityMultiplier` must also be set and is
 	// multiplied with the base quantity.
+	//
 	// For example, if `spec.devices[*].capacity` has an entry "dra.example.com/memory": "128Gi",
 	// and this field is set to "dra.example.com/memory", then for a claim allocation
 	// that consumes { "dra.example.com/memory": "4Gi" } the base quantity for the
 	// node allocatable resource mapping will be "4Gi".
 	// The final node allocatable resource amount is `consumedCapacity[capacityKey]` * `capacityMultiplier`.
+	//
+	// In this example, "dra.example.com/memory" is a fictional standardized capacity name.
+	// For driver-specific capacities the driver name can be omitted.
+	// As defined for consumedCapacity, the capacity consumption may be recorded
+	// there with or without the driver name.
+	//
 	// +optional
 	CapacityKey *QualifiedName
 
@@ -570,6 +577,8 @@ type NodeAllocatableOverhead struct {
 	// - Pod-level cgroup (requests and limits): Kubelet adds PerPod + (PerContainer * NumReferences).
 	// - Container-level cgroup (limits only): Kubelet adds PerPod + PerContainer for each referencing container.
 	// This allows any single container to access the pod-level overhead, while the parent cgroup caps the total usage to account for PerPod exactly once.
+	// PerContainer overhead of a claim referenced by a non-restartable init container is counted towards
+	// the pod's peak resource calculation (see Pod `spec.initContainers`), not for the pod's entire duration.
 	// +optional
 	PerContainer *resource.Quantity
 }
@@ -1008,6 +1017,9 @@ const (
 	DeviceConstraintsMaxSize       = 32
 	DeviceConfigMaxSize            = 32
 	DeviceDerivedAttributesMaxSize = 32
+	// MaxCapacityRequirements is the maximum number of entries allowed in
+	// CapacityRequirements.Requests.
+	MaxCapacityRequirements = 32
 )
 
 // DRAAdminNamespaceLabelKey is a label key used to grant administrative access
@@ -1350,6 +1362,17 @@ type CapacityRequirements struct {
 	// `device.capacity[<domain>].<name>.compareTo(quantity(<request quantity>)) >= 0`.
 	// For example, device.capacity['test-driver.cdi.k8s.io'].counters.compareTo(quantity('2')) >= 0.
 	//
+	// The domain prefix can be omitted, in which case it defaults to the driver of the
+	// device under evaluation. For example, "bandwidth: 1Gi" is equivalent to
+	// "<driver>/bandwidth: 1Gi" for a device published by driver "<driver>", regardless of
+	// which other, differently-domained "bandwidth" capacities that device might also have.
+	// To request one of those, the domain must be given explicitly, for example
+	// "example.com/bandwidth". Requesting the same driver capacity with and without
+	// the driver name as domain, for example "bandwidth: 1Gi" and "<driver>/bandwidth: 2Gi", is
+	// ambiguous and causes scheduling to fail with an error. For the sake of consistency
+	// there's no exception for such a conflict where the value is the same - that is still
+	// an error.
+	//
 	// When a requestPolicy is defined, the requested amount is adjusted upward
 	// to the nearest valid value based on the policy.
 	// If the requested amount cannot be adjusted to a valid value—because it exceeds what the requestPolicy allows—
@@ -1363,7 +1386,9 @@ type CapacityRequirements struct {
 	// If the device allows multiple allocation,
 	// the aggregated amount across all requests must not exceed the capacity value.
 	// The consumed capacity, which may be adjusted based on the requestPolicy if defined,
-	// is recorded in the resource claim’s status.devices[*].consumedCapacity field.
+	// is recorded in the resource claim's status.devices[*].consumedCapacity field.
+	//
+	// Requests may have at most 32 entries. The values must not be negative.
 	//
 	// +optional
 	Requests map[QualifiedName]resource.Quantity
@@ -1971,6 +1996,10 @@ type DeviceRequestAllocationResult struct {
 	//
 	// This field is populated only for devices that allow multiple allocations.
 	// All capacity entries are included, even if the consumed amount is zero.
+	// The domain prefix in the capacity name may be omitted if it is
+	// the same as the driver name.
+	//
+	// ConsumedCapacity may have at most 32 entries. The values must not be negative.
 	//
 	// +optional
 	// +featureGate=DRAConsumableCapacity

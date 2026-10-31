@@ -305,21 +305,23 @@ const maxStorageHealthConditions = 16
 
 func validateStorageHealthCondition(condition storage.StorageHealthCondition, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	if !validStorageHealthStatusTypes.Has(condition.Status) {
-		allErrs = append(allErrs, field.NotSupported(fldPath.Child("status"), condition.Status, sets.List(validStorageHealthStatusTypes)))
+	if len(condition.Status) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("status"), "").MarkCoveredByDeclarative())
+	} else if !validStorageHealthStatusTypes.Has(condition.Status) {
+		allErrs = append(allErrs, field.NotSupported(fldPath.Child("status"), condition.Status, sets.List(validStorageHealthStatusTypes)).MarkCoveredByDeclarative())
 	}
 	if len(condition.Reason) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("reason"), ""))
+		allErrs = append(allErrs, field.Required(fldPath.Child("reason"), "").MarkCoveredByDeclarative())
 	} else {
 		for _, msg := range metav1validation.IsValidConditionReason(condition.Reason) {
-			allErrs = append(allErrs, field.Invalid(fldPath.Child("reason"), condition.Reason, msg))
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("reason"), condition.Reason, msg).WithOrigin("format=k8s-condition-reason").MarkCoveredByDeclarative())
 		}
 		if len(condition.Reason) > 256 {
-			allErrs = append(allErrs, field.TooLong(fldPath.Child("reason"), condition.Reason, 256))
+			allErrs = append(allErrs, field.TooLong(fldPath.Child("reason"), condition.Reason, 256).WithOrigin("maxBytes").MarkCoveredByDeclarative())
 		}
 	}
 	if len(condition.Message) > 1024 {
-		allErrs = append(allErrs, field.TooLong(fldPath.Child("message"), condition.Message, 1024))
+		allErrs = append(allErrs, field.TooLong(fldPath.Child("message"), condition.Message, 1024).WithOrigin("maxBytes").MarkCoveredByDeclarative())
 	}
 	if condition.AccessMode != nil && !validStorageHealthAccessModes.Has(*condition.AccessMode) {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("accessMode"), *condition.AccessMode, sets.List(validStorageHealthAccessModes)))
@@ -332,13 +334,9 @@ func validateStorageHealthCondition(condition storage.StorageHealthCondition, fl
 
 func validateStorageHealth(health storage.StorageHealth, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	if len(health.Name) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("name"), ""))
-	} else {
-		allErrs = append(allErrs, apivalidation.ValidateCSIDriverName(health.Name, fldPath.Child("name"))...)
-	}
+	allErrs = append(allErrs, apivalidation.ValidateCSIDriverName(health.Name, fldPath.Child("name"), apivalidation.RequiredCovered)...)
 	if len(health.HealthConditions) > maxStorageHealthConditions {
-		allErrs = append(allErrs, field.TooMany(fldPath.Child("healthConditions"), len(health.HealthConditions), maxStorageHealthConditions))
+		allErrs = append(allErrs, field.TooMany(fldPath.Child("healthConditions"), len(health.HealthConditions), maxStorageHealthConditions).WithOrigin("maxItems").MarkCoveredByDeclarative())
 		return allErrs
 	}
 	for i, condition := range health.HealthConditions {
@@ -457,7 +455,7 @@ func ValidateCSIDriverUpdate(new, old *storage.CSIDriver) field.ErrorList {
 	allErrs = append(allErrs, validateCSIDriverSpec(&new.Spec, field.NewPath("spec"))...)
 
 	// immutable fields should not be mutated.
-	allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(new.Spec.AttachRequired, old.Spec.AttachRequired, field.NewPath("spec", "attachedRequired"))...)
+	allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(new.Spec.AttachRequired, old.Spec.AttachRequired, field.NewPath("spec", "attachRequired"))...)
 	allErrs = append(allErrs, apimachineryvalidation.ValidateImmutableField(new.Spec.VolumeLifecycleModes, old.Spec.VolumeLifecycleModes, field.NewPath("spec", "volumeLifecycleModes")).WithOrigin("immutable").MarkCoveredByDeclarative()...)
 
 	return allErrs
@@ -468,7 +466,7 @@ func ValidateCSIDriverUpdate(new, old *storage.CSIDriver) field.ErrorList {
 func validateCSIDriverSpec(
 	spec *storage.CSIDriverSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, validateAttachRequired(spec.AttachRequired, fldPath.Child("attachedRequired"))...)
+	allErrs = append(allErrs, validateAttachRequired(spec.AttachRequired, fldPath.Child("attachRequired"))...)
 	allErrs = append(allErrs, validatePodInfoOnMount(spec.PodInfoOnMount, fldPath.Child("podInfoOnMount"))...)
 	allErrs = append(allErrs, validateStorageCapacity(spec.StorageCapacity, fldPath.Child("storageCapacity"))...)
 	allErrs = append(allErrs, validateFSGroupPolicy(spec.FSGroupPolicy, fldPath.Child("fsGroupPolicy"))...)

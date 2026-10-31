@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -73,11 +75,13 @@ func testWatch(ctx context.Context, t *testing.T, store storage.Interface, recur
 	}
 
 	tests := []struct {
-		name       string
-		namespace  string
-		key        string
-		pred       storage.SelectionPredicate
-		watchTests []*testWatchStruct
+		name               string
+		namespace          string
+		key                string
+		pred               storage.SelectionPredicate
+		watchWithoutPrevKV bool
+		expectedWatchError error
+		watchTests         []*testWatchStruct
 	}{{
 		name:       "create a key",
 		namespace:  fmt.Sprintf("test-ns-1-%t", recursive),
@@ -130,6 +134,40 @@ func testWatch(ctx context.Context, t *testing.T, store storage.Interface, recur
 				return labels.Set(pod.Labels), nil, nil
 			},
 		},
+	}, {
+		name:               "watch without previous values",
+		namespace:          fmt.Sprintf("test-ns-6-%t", recursive),
+		pred:               storage.Everything,
+		watchWithoutPrevKV: true,
+		watchTests: []*testWatchStruct{
+			{selectedPod(basePod), true, watch.Added},
+			{selectedPod(basePodAssigned), true, watch.Modified},
+			{nil, true, watch.Deleted},
+		},
+	}, {
+		name:               "watch without previous values with a field selector",
+		namespace:          fmt.Sprintf("test-ns-7-%t", recursive),
+		watchWithoutPrevKV: true,
+		expectedWatchError: errors.NewInternalError(fmt.Errorf("watchWithoutPrevKV requires an empty predicate")),
+		pred: storage.SelectionPredicate{
+			Label: labels.Everything(),
+			Field: fields.OneTermEqualSelector("spec.nodeName", "bar"),
+			GetAttrs: func(obj runtime.Object) (labels.Set, fields.Set, error) {
+				return nil, fields.Set{"spec.nodeName": obj.(*example.Pod).Spec.NodeName}, nil
+			},
+		},
+	}, {
+		name:               "watch without previous values with a label selector",
+		namespace:          fmt.Sprintf("test-ns-8-%t", recursive),
+		watchWithoutPrevKV: true,
+		expectedWatchError: errors.NewInternalError(fmt.Errorf("watchWithoutPrevKV requires an empty predicate")),
+		pred: storage.SelectionPredicate{
+			Label: labels.SelectorFromSet(labels.Set{"select": "true"}),
+			Field: fields.Everything(),
+			GetAttrs: func(obj runtime.Object) (labels.Set, fields.Set, error) {
+				return labels.Set(obj.(*example.Pod).Labels), nil, nil
+			},
+		},
 	}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,7 +183,18 @@ func testWatch(ctx context.Context, t *testing.T, store storage.Interface, recur
 				t.Fatalf("List failed: %v", err)
 			}
 
-			w, err := store.Watch(ctx, watchKey, storage.ListOptions{ResourceVersion: out.ResourceVersion, Predicate: tt.pred, Recursive: recursive})
+			w, err := store.Watch(ctx, watchKey, storage.ListOptions{
+				ResourceVersion: out.ResourceVersion, Predicate: tt.pred, Recursive: recursive, WatchWithoutPrevKV: tt.watchWithoutPrevKV,
+			})
+			if w != nil {
+				t.Cleanup(w.Stop)
+			}
+			if tt.expectedWatchError != nil {
+				require.EqualError(t, err, tt.expectedWatchError.Error())
+				require.Nil(t, w)
+				require.Equal(t, errors.IsInternalError(tt.expectedWatchError), errors.IsInternalError(err), "unexpected watch error type")
+				return
+			}
 			if err != nil {
 				t.Fatalf("Watch failed: %v", err)
 			}
@@ -183,13 +232,26 @@ func testWatch(ctx context.Context, t *testing.T, store storage.Interface, recur
 						t.Fatalf("Delete failed: %v", err)
 					}
 				}
+				var expectEvent *watch.Event
 				if watchTest.expectEvent {
 					expectObj := out
 					if watchTest.watchType == watch.Deleted {
 						expectObj = prevObj
 						expectObj.ResourceVersion = out.ResourceVersion
 					}
-					testCheckResult(t, w, watch.Event{Type: watchTest.watchType, Object: expectObj})
+					expectEvent = &watch.Event{Type: watchTest.watchType, Object: expectObj}
+				}
+				if tt.watchWithoutPrevKV && watchTest.watchType == watch.Deleted {
+					testCheckResultFunc(t, w, func(actualEvent watch.Event) {
+						require.Equal(t, watch.Deleted, actualEvent.Type)
+						obj, err := meta.Accessor(actualEvent.Object)
+						require.NoError(t, err)
+						require.Equal(t, prevObj.Name, obj.GetName())
+						require.Equal(t, prevObj.Namespace, obj.GetNamespace())
+						require.Equal(t, out.ResourceVersion, obj.GetResourceVersion())
+					})
+				} else {
+					testCheckResult(t, w, expectEvent)
 				}
 				prevObj = out
 			}
@@ -197,6 +259,25 @@ func testWatch(ctx context.Context, t *testing.T, store storage.Interface, recur
 			testCheckStop(t, w)
 		})
 	}
+}
+
+func RunTestWatchWithoutPrevKVReverseError(ctx context.Context, t *testing.T, store storage.Interface, wantErr error) {
+	key, storedObj := testPropagateStore(ctx, t, store, &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "ns"}})
+	w, err := store.Watch(ctx, key, storage.ListOptions{
+		ResourceVersion: storedObj.ResourceVersion, Predicate: storage.Everything, WatchWithoutPrevKV: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(w.Stop)
+
+	err = store.Delete(ctx, key, &example.Pod{}, nil, storage.ValidateAllObjectFunc, nil, storage.DeleteOptions{})
+	require.NoError(t, err)
+	testCheckResultFunc(t, w, func(actualEvent watch.Event) {
+		require.Equal(t, watch.Error, actualEvent.Type)
+		err := errors.FromObject(actualEvent.Object)
+		require.True(t, errors.IsInternalError(err), "expected an internal error, got %v", err)
+		require.ErrorContains(t, err, wantErr.Error())
+	})
+	testCheckStop(t, w)
 }
 
 // RunTestWatchFromZero tests that
@@ -211,7 +292,7 @@ func RunTestWatchFromZero(ctx context.Context, t *testing.T, store storage.Inter
 	if err != nil {
 		t.Fatalf("Watch failed: %v", err)
 	}
-	testCheckResult(t, w, watch.Event{Type: watch.Added, Object: storedObj})
+	testCheckResult(t, w, &watch.Event{Type: watch.Added, Object: storedObj})
 
 	// Update
 	out := &example.Pod{}
@@ -228,7 +309,7 @@ func RunTestWatchFromZero(ctx context.Context, t *testing.T, store storage.Inter
 	// when testing with the Cacher since we may have to allow for slow
 	// processing by allowing updates to propagate to the watch cache.
 	// This allows for that.
-	testCheckResult(t, w, watch.Event{Type: watch.Modified, Object: out})
+	testCheckResult(t, w, &watch.Event{Type: watch.Modified, Object: out})
 	w.Stop()
 
 	// Make sure when we watch from 0 we receive an ADDED event
@@ -237,7 +318,7 @@ func RunTestWatchFromZero(ctx context.Context, t *testing.T, store storage.Inter
 		t.Fatalf("Watch failed: %v", err)
 	}
 
-	testCheckResult(t, w, watch.Event{Type: watch.Added, Object: out})
+	testCheckResult(t, w, &watch.Event{Type: watch.Added, Object: out})
 	w.Stop()
 
 	// Compact previous versions
@@ -264,7 +345,7 @@ func RunTestWatchFromZero(ctx context.Context, t *testing.T, store storage.Inter
 	if err != nil {
 		t.Fatalf("Watch failed: %v", err)
 	}
-	testCheckResult(t, w, watch.Event{Type: watch.Added, Object: newOut})
+	testCheckResult(t, w, &watch.Event{Type: watch.Added, Object: newOut})
 
 	// Make sure we can't watch from older resource versions anymoer and get a "Gone" error.
 	tooOldWatcher, err := store.Watch(ctx, key, storage.ListOptions{ResourceVersion: out.ResourceVersion, Predicate: storage.Everything})
@@ -315,7 +396,7 @@ func RunTestWatchFromNonZero(ctx context.Context, t *testing.T, store storage.In
 			newObj.Annotations = map[string]string{"version": "2"}
 			return newObj, nil
 		}), nil)
-	testCheckResult(t, w, watch.Event{Type: watch.Modified, Object: out})
+	testCheckResult(t, w, &watch.Event{Type: watch.Modified, Object: out})
 }
 
 func RunTestDelayedWatchDelivery(ctx context.Context, t *testing.T, store storage.Interface) {
@@ -548,22 +629,34 @@ func RunTestWatcherTimeout(ctx context.Context, t *testing.T, store storage.Inte
 		if err := store.Create(ctx, computePodKey(pod), pod, out, 0); err != nil {
 			t.Fatalf("Create failed: %v", err)
 		}
-		testCheckResult(t, readingWatcher, watch.Event{Type: watch.Added, Object: out})
+		testCheckResult(t, readingWatcher, &watch.Event{Type: watch.Added, Object: out})
 	}
 	if time.Since(startTime) > time.Duration(250*nonReadingWatchers)*time.Millisecond {
 		t.Errorf("waiting for events took too long: %v", time.Since(startTime))
 	}
 }
 
-func RunTestWatchDeleteEventObjectHaveLatestRV(ctx context.Context, t *testing.T, store storage.Interface) {
-	key, storedObj := testPropagateStore(ctx, t, store, &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "test-ns"}})
+func RunTestWatchDeleteEventObjectHaveLatestRV(ctx context.Context, t *testing.T, store storage.Interface, isNamespaceScoped, watchWithoutPrevKV bool, recorder *WatchRecorder) {
+	var namespace string
+	if isNamespaceScoped {
+		namespace = "test-ns"
+	}
+	pod := &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: namespace, Labels: map[string]string{"app": "test"}}}
+	key := path.Join("/pods", namespace, pod.Name)
+	storedObj := &example.Pod{}
+	if err := store.Create(ctx, key, pod, storedObj, 0); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
 
 	watchCtx, cancel := context.WithTimeout(ctx, wait.ForeverTestTimeout)
 	t.Cleanup(cancel)
-	w, err := store.Watch(watchCtx, key, storage.ListOptions{ResourceVersion: storedObj.ResourceVersion, Predicate: storage.Everything})
+	w, err := store.Watch(watchCtx, key, storage.ListOptions{
+		ResourceVersion: storedObj.ResourceVersion, Predicate: storage.Everything, WatchWithoutPrevKV: watchWithoutPrevKV,
+	})
 	if err != nil {
 		t.Fatalf("Watch failed: %v", err)
 	}
+	t.Cleanup(w.Stop)
 
 	deletedObj := &example.Pod{}
 	if err := store.Delete(ctx, key, deletedObj, &storage.Preconditions{}, storage.ValidateAllObjectFunc, nil, storage.DeleteOptions{}); err != nil {
@@ -575,7 +668,23 @@ func RunTestWatchDeleteEventObjectHaveLatestRV(ctx context.Context, t *testing.T
 		t.Fatalf("ResourceVersion didn't changed on deletion: %s", deletedObj.ResourceVersion)
 	}
 
-	testCheckResult(t, w, watch.Event{Type: watch.Deleted, Object: deletedObj})
+	if watchWithoutPrevKV {
+		testCheckResultFunc(t, w, func(actualEvent watch.Event) {
+			require.Equal(t, watch.Deleted, actualEvent.Type)
+			obj, err := meta.Accessor(actualEvent.Object)
+			require.NoError(t, err)
+			require.Equal(t, pod.Name, obj.GetName())
+			require.Equal(t, namespace, obj.GetNamespace())
+			require.Equal(t, deletedObj.ResourceVersion, obj.GetResourceVersion())
+		})
+	} else {
+		testCheckResult(t, w, &watch.Event{Type: watch.Deleted, Object: deletedObj})
+	}
+	if recorder != nil {
+		requests := recorder.WatchRequests()
+		require.Len(t, requests, 1)
+		require.Equal(t, !watchWithoutPrevKV, requests[0].IsPrevKV(), "etcd watch PrevKV option")
+	}
 }
 
 func RunTestWatchInitializationSignal(ctx context.Context, t *testing.T, store storage.Interface) {
@@ -737,6 +846,126 @@ func RunTestClusterScopedWatch(ctx context.Context, t *testing.T, store storage.
 				{basePodAssigned("t6-foo2", "t6-bar1"), false, ""},
 			},
 		},
+		{
+			name:          "cluster-wide watch, request without name, field selector with metadata.name",
+			recursive:     true,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t7-foo1"),
+			watchTests: []*testWatchStruct{
+				{basePod("t7-foo1"), true, watch.Added},
+				{basePod("t7-foo2"), false, ""},
+				{basePodUpdated("t7-foo1"), true, watch.Modified},
+				{basePodUpdated("t7-foo2"), false, ""},
+			},
+		},
+		{
+			name:      "cluster-wide watch, request without name, field selector with metadata.name and spec.nodeName",
+			recursive: true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name": "t8-foo1",
+				"spec.nodeName": "t8-bar1",
+			}),
+			indexFields: []string{"spec.nodeName"},
+			watchTests: []*testWatchStruct{
+				{basePod("t8-foo1"), false, ""},
+				{basePod("t8-foo2"), false, ""},
+				{basePodUpdated("t8-foo1"), false, ""},
+				{basePodUpdated("t8-foo2"), false, ""},
+				{basePodAssigned("t8-foo1", "t8-bar1"), true, watch.Added},
+			},
+		},
+		{
+			name:      "cluster-wide watch, request without name, field selector with metadata.name, and with spec.nodeName to filter out watch",
+			recursive: true,
+			fieldSelector: fields.AndSelectors(
+				fields.ParseSelectorOrDie("spec.nodeName!=t9-bar1"),
+				fields.SelectorFromSet(fields.Set{"metadata.name": "t9-foo1"}),
+			),
+			indexFields: []string{"spec.nodeName"},
+			watchTests: []*testWatchStruct{
+				{basePod("t9-foo1"), true, watch.Added},
+				{basePod("t9-foo2"), false, ""},
+				{basePodUpdated("t9-foo1"), true, watch.Modified},
+				{basePodAssigned("t9-foo1", "t9-bar1"), true, watch.Deleted},
+				{basePodAssigned("t9-foo2", "t9-bar1"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, request with name, without field selector",
+			requestedName: "t10-foo1",
+			recursive:     false,
+			fieldSelector: fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{basePod("t10-foo1"), true, watch.Added},
+				{basePod("t10-foo2"), false, ""},
+				{basePodUpdated("t10-foo1"), true, watch.Modified},
+				{basePodUpdated("t10-foo2"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, request with name, field selector with non-matched metadata.name",
+			requestedName: "t11-foo1",
+			recursive:     false,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t11-foo2"),
+			watchTests: []*testWatchStruct{
+				{basePod("t11-foo1"), false, ""},
+				{basePod("t11-foo2"), false, ""},
+				{basePodUpdated("t11-foo1"), false, ""},
+				{basePodUpdated("t11-foo2"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, recursive, request with name, without field selector",
+			requestedName: "t12-foo1",
+			recursive:     true,
+			fieldSelector: fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{basePod("t12-foo1"), false, ""},
+				{basePod("t12-foo2"), false, ""},
+				{basePodUpdated("t12-foo1"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, recursive, request with name, field selector with metadata.name",
+			requestedName: "t13-foo1",
+			recursive:     true,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t13-foo1"),
+			watchTests: []*testWatchStruct{
+				{basePod("t13-foo1"), false, ""},
+				{basePod("t13-foo2"), false, ""},
+				{basePodUpdated("t13-foo1"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, recursive, request with name, field selector with non-matched metadata.name",
+			requestedName: "t14-foo1",
+			recursive:     true,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t14-foo2"),
+			watchTests: []*testWatchStruct{
+				{basePod("t14-foo1"), false, ""},
+				{basePod("t14-foo2"), false, ""},
+				{basePodUpdated("t14-foo1"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, non-recursive, request without name, without field selector",
+			recursive:     false,
+			fieldSelector: fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{basePod("t15-foo1"), false, ""},
+				{basePodUpdated("t15-foo1"), false, ""},
+			},
+		},
+		{
+			name:          "cluster-wide watch, non-recursive, request without name, field selector with metadata.name",
+			recursive:     false,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t16-foo1"),
+			watchTests: []*testWatchStruct{
+				{basePod("t16-foo1"), false, ""},
+				{basePod("t16-foo2"), false, ""},
+				{basePodUpdated("t16-foo1"), false, ""},
+				{basePodUpdated("t16-foo2"), false, ""},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -792,9 +1021,11 @@ func RunTestClusterScopedWatch(ctx context.Context, t *testing.T, store storage.
 				} else {
 					currentObjs[watchTest.obj.Name] = out
 				}
+				var expectEvent *watch.Event
 				if watchTest.expectEvent {
-					testCheckResult(t, w, watch.Event{Type: watchTest.watchType, Object: expectObj})
+					expectEvent = &watch.Event{Type: watchTest.watchType, Object: expectObj}
 				}
+				testCheckResult(t, w, expectEvent)
 			}
 			w.Stop()
 			testCheckStop(t, w)
@@ -1048,6 +1279,451 @@ func RunTestNamespaceScopedWatch(ctx context.Context, t *testing.T, store storag
 				{baseNamespacedPodAssigned("t19-foo2", "t19-ns1", "t19-bar1"), true, watch.Deleted},
 			},
 		},
+		{
+			name:          "namespaced watch, request without name, request without namespace, field selector with metadata.name",
+			recursive:     true,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t20-foo1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t20-foo1", "t20-ns1"), true, watch.Added},
+				{baseNamespacedPod("t20-foo1", "t20-ns2"), true, watch.Added},
+				{baseNamespacedPod("t20-foo2", "t20-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t20-foo1", "t20-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:      "namespaced watch, request without name, request without namespace, field selector with metadata.name and metadata.namespace",
+			recursive: true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t21-foo1",
+				"metadata.namespace": "t21-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t21-foo1", "t21-ns1"), true, watch.Added},
+				{baseNamespacedPod("t21-foo2", "t21-ns1"), false, ""},
+				{baseNamespacedPod("t21-foo1", "t21-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t21-foo1", "t21-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:               "namespaced watch, request without name, request with namespace, with field selector metadata.name",
+			requestedNamespace: "t22-ns1",
+			recursive:          true,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.name=t22-foo1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t22-foo1", "t22-ns1"), true, watch.Added},
+				{baseNamespacedPod("t22-foo2", "t22-ns1"), false, ""},
+				{baseNamespacedPod("t22-foo1", "t22-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t22-foo1", "t22-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:               "namespaced watch, request without name, request with namespace, with field selector metadata.name and matched metadata.namespace",
+			requestedNamespace: "t23-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t23-foo1",
+				"metadata.namespace": "t23-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t23-foo1", "t23-ns1"), true, watch.Added},
+				{baseNamespacedPod("t23-foo2", "t23-ns1"), false, ""},
+				{baseNamespacedPod("t23-foo1", "t23-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t23-foo1", "t23-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:               "namespaced watch, request without name, request with namespace, with field selector metadata.name and non-matched metadata.namespace",
+			requestedNamespace: "t24-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t24-foo1",
+				"metadata.namespace": "t24-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t24-foo1", "t24-ns1"), false, ""},
+				{baseNamespacedPod("t24-foo2", "t24-ns1"), false, ""},
+				{baseNamespacedPod("t24-foo1", "t24-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t24-foo1", "t24-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, request without name, request with namespace, with field selector metadata.name, metadata.namespace and spec.nodename",
+			requestedNamespace: "t25-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t25-foo1",
+				"metadata.namespace": "t25-ns1",
+				"spec.nodeName":      "t25-bar1",
+			}),
+			indexFields: []string{"spec.nodeName"},
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t25-foo1", "t25-ns1"), false, ""},
+				{baseNamespacedPod("t25-foo2", "t25-ns1"), false, ""},
+				{baseNamespacedPod("t25-foo1", "t25-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t25-foo1", "t25-ns1"), false, ""},
+				{baseNamespacedPodAssigned("t25-foo1", "t25-ns1", "t25-bar1"), true, watch.Added},
+			},
+		},
+		{
+			name:               "namespaced watch, request without name, request with namespace, with field selector metadata.name, metadata.namespace, and with spec.nodename to filter out watch",
+			requestedNamespace: "t26-ns1",
+			recursive:          true,
+			fieldSelector: fields.AndSelectors(
+				fields.ParseSelectorOrDie("spec.nodeName!=t26-bar1"),
+				fields.SelectorFromSet(fields.Set{"metadata.name": "t26-foo2", "metadata.namespace": "t26-ns1"}),
+			),
+			indexFields: []string{"spec.nodeName"},
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t26-foo1", "t26-ns1"), false, ""},
+				{baseNamespacedPod("t26-foo2", "t26-ns2"), false, ""},
+				{baseNamespacedPod("t26-foo2", "t26-ns1"), true, watch.Added},
+				{baseNamespacedPodUpdated("t26-foo2", "t26-ns1"), true, watch.Modified},
+				{baseNamespacedPodAssigned("t26-foo2", "t26-ns1", "t26-bar1"), true, watch.Deleted},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, without field selector",
+			requestedName:      "t27-foo1",
+			requestedNamespace: "t27-ns1",
+			recursive:          false,
+			fieldSelector:      fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t27-foo1", "t27-ns1"), true, watch.Added},
+				{baseNamespacedPod("t27-foo2", "t27-ns1"), false, ""},
+				{baseNamespacedPod("t27-foo1", "t27-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t27-foo1", "t27-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, field selector with matched metadata.namespace",
+			requestedName:      "t28-foo1",
+			requestedNamespace: "t28-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t28-ns1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t28-foo1", "t28-ns1"), true, watch.Added},
+				{baseNamespacedPod("t28-foo2", "t28-ns1"), false, ""},
+				{baseNamespacedPod("t28-foo1", "t28-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t28-foo1", "t28-ns1"), true, watch.Modified},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, field selector with non-matched metadata.namespace",
+			requestedName:      "t29-foo1",
+			requestedNamespace: "t29-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t29-ns2"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t29-foo1", "t29-ns1"), false, ""},
+				{baseNamespacedPod("t29-foo2", "t29-ns1"), false, ""},
+				{baseNamespacedPod("t29-foo1", "t29-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t29-foo1", "t29-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, with field selector metadata.name and non-matched metadata.namespace",
+			requestedName:      "t30-foo1",
+			requestedNamespace: "t30-ns1",
+			recursive:          false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t30-foo1",
+				"metadata.namespace": "t30-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t30-foo1", "t30-ns1"), false, ""},
+				{baseNamespacedPod("t30-foo2", "t30-ns1"), false, ""},
+				{baseNamespacedPod("t30-foo1", "t30-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t30-foo1", "t30-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, with field selector non-matched metadata.name",
+			requestedName:      "t31-foo1",
+			requestedNamespace: "t31-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.name=t31-foo2"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t31-foo1", "t31-ns1"), false, ""},
+				{baseNamespacedPod("t31-foo2", "t31-ns1"), false, ""},
+				{baseNamespacedPod("t31-foo1", "t31-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t31-foo1", "t31-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, with field selector non-matched metadata.name and matched metadata.namespace",
+			requestedName:      "t32-foo1",
+			requestedNamespace: "t32-ns1",
+			recursive:          false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t32-foo2",
+				"metadata.namespace": "t32-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t32-foo1", "t32-ns1"), false, ""},
+				{baseNamespacedPod("t32-foo2", "t32-ns1"), false, ""},
+				{baseNamespacedPod("t32-foo1", "t32-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t32-foo1", "t32-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, request with name, request with namespace, with field selector non-matched metadata.name and non-matched metadata.namespace",
+			requestedName:      "t33-foo1",
+			requestedNamespace: "t33-ns1",
+			recursive:          false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t33-foo2",
+				"metadata.namespace": "t33-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t33-foo1", "t33-ns1"), false, ""},
+				{baseNamespacedPod("t33-foo2", "t33-ns1"), false, ""},
+				{baseNamespacedPod("t33-foo1", "t33-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t33-foo1", "t33-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, without field selector",
+			requestedName:      "t34-foo1",
+			requestedNamespace: "t34-ns1",
+			recursive:          true,
+			fieldSelector:      fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t34-foo1", "t34-ns1"), false, ""},
+				{baseNamespacedPod("t34-foo2", "t34-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t34-foo1", "t34-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, field selector with matched metadata.namespace",
+			requestedName:      "t35-foo1",
+			requestedNamespace: "t35-ns1",
+			recursive:          true,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t35-ns1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t35-foo1", "t35-ns1"), false, ""},
+				{baseNamespacedPod("t35-foo2", "t35-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t35-foo1", "t35-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, field selector with non-matched metadata.namespace",
+			requestedName:      "t36-foo1",
+			requestedNamespace: "t36-ns1",
+			recursive:          true,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t36-ns2"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t36-foo1", "t36-ns1"), false, ""},
+				{baseNamespacedPod("t36-foo1", "t36-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t36-foo1", "t36-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector metadata.name",
+			requestedName:      "t37-foo1",
+			requestedNamespace: "t37-ns1",
+			recursive:          true,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.name=t37-foo1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t37-foo1", "t37-ns1"), false, ""},
+				{baseNamespacedPod("t37-foo2", "t37-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t37-foo1", "t37-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector metadata.name and matched metadata.namespace",
+			requestedName:      "t38-foo1",
+			requestedNamespace: "t38-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t38-foo1",
+				"metadata.namespace": "t38-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t38-foo1", "t38-ns1"), false, ""},
+				{baseNamespacedPod("t38-foo2", "t38-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t38-foo1", "t38-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector metadata.name and non-matched metadata.namespace",
+			requestedName:      "t39-foo1",
+			requestedNamespace: "t39-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t39-foo1",
+				"metadata.namespace": "t39-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t39-foo1", "t39-ns1"), false, ""},
+				{baseNamespacedPod("t39-foo1", "t39-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t39-foo1", "t39-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector non-matched metadata.name",
+			requestedName:      "t40-foo1",
+			requestedNamespace: "t40-ns1",
+			recursive:          true,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.name=t40-foo2"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t40-foo1", "t40-ns1"), false, ""},
+				{baseNamespacedPod("t40-foo2", "t40-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t40-foo1", "t40-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector non-matched metadata.name and matched metadata.namespace",
+			requestedName:      "t41-foo1",
+			requestedNamespace: "t41-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t41-foo2",
+				"metadata.namespace": "t41-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t41-foo1", "t41-ns1"), false, ""},
+				{baseNamespacedPod("t41-foo2", "t41-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t41-foo1", "t41-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, recursive, request with name, request with namespace, with field selector non-matched metadata.name and non-matched metadata.namespace",
+			requestedName:      "t42-foo1",
+			requestedNamespace: "t42-ns1",
+			recursive:          true,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t42-foo2",
+				"metadata.namespace": "t42-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t42-foo1", "t42-ns1"), false, ""},
+				{baseNamespacedPod("t42-foo2", "t42-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t42-foo1", "t42-ns1"), false, ""},
+			},
+		},
+		{
+			name:          "namespaced watch, non-recursive, request without name, request without namespace, without field selector",
+			recursive:     false,
+			fieldSelector: fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t43-foo1", "t43-ns1"), false, ""},
+				{baseNamespacedPod("t43-foo2", "t43-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t43-foo1", "t43-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t43-foo2", "t43-ns2"), false, ""},
+			},
+		},
+		{
+			name:          "namespaced watch, non-recursive, request without name, request without namespace, field selector with metadata.namespace",
+			recursive:     false,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.namespace=t44-ns1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t44-foo1", "t44-ns1"), false, ""},
+				{baseNamespacedPod("t44-foo1", "t44-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t44-foo1", "t44-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t44-foo1", "t44-ns2"), false, ""},
+			},
+		},
+		{
+			name:          "namespaced watch, non-recursive, request without name, request without namespace, field selector with metadata.name",
+			recursive:     false,
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=t45-foo1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t45-foo1", "t45-ns1"), false, ""},
+				{baseNamespacedPod("t45-foo1", "t45-ns2"), false, ""},
+				{baseNamespacedPod("t45-foo2", "t45-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t45-foo1", "t45-ns1"), false, ""},
+			},
+		},
+		{
+			name:      "namespaced watch, non-recursive, request without name, request without namespace, field selector with metadata.name and metadata.namespace",
+			recursive: false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t46-foo1",
+				"metadata.namespace": "t46-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t46-foo1", "t46-ns1"), false, ""},
+				{baseNamespacedPod("t46-foo2", "t46-ns1"), false, ""},
+				{baseNamespacedPod("t46-foo1", "t46-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t46-foo1", "t46-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, without field selector",
+			requestedNamespace: "t47-ns1",
+			recursive:          false,
+			fieldSelector:      fields.Everything(),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t47-foo1", "t47-ns1"), false, ""},
+				{baseNamespacedPod("t47-foo1", "t47-ns2"), false, ""},
+				{baseNamespacedPod("t47-foo2", "t47-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t47-foo1", "t47-ns1"), false, ""},
+				{baseNamespacedPodUpdated("t47-foo1", "t47-ns2"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, field selector with matched metadata.namespace",
+			requestedNamespace: "t48-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t48-ns1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t48-foo1", "t48-ns1"), false, ""},
+				{baseNamespacedPod("t48-foo1", "t48-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t48-foo1", "t48-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, field selector with non-matched metadata.namespace",
+			requestedNamespace: "t49-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.namespace=t49-ns2"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t49-foo1", "t49-ns1"), false, ""},
+				{baseNamespacedPod("t49-foo1", "t49-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t49-foo1", "t49-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, with field selector metadata.name",
+			requestedNamespace: "t50-ns1",
+			recursive:          false,
+			fieldSelector:      fields.ParseSelectorOrDie("metadata.name=t50-foo1"),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t50-foo1", "t50-ns1"), false, ""},
+				{baseNamespacedPod("t50-foo2", "t50-ns1"), false, ""},
+				{baseNamespacedPod("t50-foo1", "t50-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t50-foo1", "t50-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, with field selector metadata.name and matched metadata.namespace",
+			requestedNamespace: "t51-ns1",
+			recursive:          false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t51-foo1",
+				"metadata.namespace": "t51-ns1",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t51-foo1", "t51-ns1"), false, ""},
+				{baseNamespacedPod("t51-foo2", "t51-ns1"), false, ""},
+				{baseNamespacedPod("t51-foo1", "t51-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t51-foo1", "t51-ns1"), false, ""},
+			},
+		},
+		{
+			name:               "namespaced watch, non-recursive, request without name, request with namespace, with field selector metadata.name and non-matched metadata.namespace",
+			requestedNamespace: "t52-ns1",
+			recursive:          false,
+			fieldSelector: fields.SelectorFromSet(fields.Set{
+				"metadata.name":      "t52-foo1",
+				"metadata.namespace": "t52-ns2",
+			}),
+			watchTests: []*testWatchStruct{
+				{baseNamespacedPod("t52-foo1", "t52-ns1"), false, ""},
+				{baseNamespacedPod("t52-foo1", "t52-ns2"), false, ""},
+				{baseNamespacedPodUpdated("t52-foo1", "t52-ns1"), false, ""},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1107,9 +1783,11 @@ func RunTestNamespaceScopedWatch(ctx context.Context, t *testing.T, store storag
 				} else {
 					currentObjs[podIdentifier] = out
 				}
+				var expectEvent *watch.Event
 				if watchTest.expectEvent {
-					testCheckResult(t, w, watch.Event{Type: watchTest.watchType, Object: expectObj})
+					expectEvent = &watch.Event{Type: watchTest.watchType, Object: expectObj}
 				}
+				testCheckResult(t, w, expectEvent)
 			}
 			w.Stop()
 			testCheckStop(t, w)
@@ -1784,6 +2462,484 @@ func RunWatchErrorIsBlockingFurtherEvents(ctx context.Context, t *testing.T, sto
 		}()
 	}
 	wg.Wait()
+}
+
+func RunTestWatchResync(ctx context.Context, t *testing.T, store storage.Interface, isCacher bool, compact Compaction, resync, triggerBookmarks func()) {
+	type testRV string
+	const (
+		rvUnset        testRV = ""
+		rvZero         testRV = "0"
+		rvOne          testRV = "1"
+		rvBeforeTest   testRV = "beforeTest"
+		rvBeforeWatch  testRV = "beforeWatch"
+		rvBeforeResync testRV = "beforeResync"
+		rvAfterResync  testRV = "afterResync"
+	)
+
+	pod1, pod2, pod3 := makePod("1"), makePod("2"), makePod("3")
+
+	added := func(pod *example.Pod) watch.Event {
+		return watch.Event{Type: watch.Added, Object: pod}
+	}
+	initialBookmarkWithPod1RV := watch.Event{Type: watch.Bookmark, Object: &example.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: pod1.ResourceVersion, Annotations: map[string]string{metav1.InitialEventsAnnotationKey: "true"}}}}
+	initialBookmarkWithPod2RV := watch.Event{Type: watch.Bookmark, Object: &example.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: pod2.ResourceVersion, Annotations: map[string]string{metav1.InitialEventsAnnotationKey: "true"}}}}
+	initialBookmarkWithPod3RV := watch.Event{Type: watch.Bookmark, Object: &example.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: pod3.ResourceVersion, Annotations: map[string]string{metav1.InitialEventsAnnotationKey: "true"}}}}
+	bookmarkWithPod3RV := watch.Event{Type: watch.Bookmark, Object: &example.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: pod3.ResourceVersion}}}
+
+	tests := []struct {
+		name                string
+		rv                  testRV
+		allowWatchBookmarks bool
+		sendInitialEvents   *bool
+		podsBeforeWatch     []*example.Pod
+		podsBeforeResync    []*example.Pod
+		compactBeforeResync *example.Pod
+		podsAfterResync     []*example.Pod
+		expect              []watch.Event
+		expectEtcd          []watch.Event
+		expectCacher        []watch.Event
+	}{
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=unset",
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=unset",
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=unset",
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=unset",
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=unset",
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=0",
+			rv:                  rvZero,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=0",
+			rv:                  rvZero,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=0",
+			rv:                rvZero,
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=0",
+			rv:                rvZero,
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=0",
+			rv:               rvZero,
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=1",
+			rv:                  rvOne,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=1",
+			rv:                  rvOne,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=1",
+			rv:                rvOne,
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=1",
+			rv:                rvOne,
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=1",
+			rv:               rvOne,
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=beforeTest",
+			rv:                  rvBeforeTest,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=beforeTest",
+			rv:                  rvBeforeTest,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=beforeTest",
+			rv:                rvBeforeTest,
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=beforeTest",
+			rv:                rvBeforeTest,
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=beforeTest",
+			rv:               rvBeforeTest,
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=beforeWatch",
+			rv:                  rvBeforeWatch,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=beforeWatch",
+			rv:                  rvBeforeWatch,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=beforeWatch",
+			rv:                rvBeforeWatch,
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=beforeWatch",
+			rv:                rvBeforeWatch,
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=beforeWatch",
+			rv:               rvBeforeWatch,
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=true, RV=beforeResync",
+			rv:                  rvBeforeResync,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectCacher:        []watch.Event{added(pod1), added(pod2), initialBookmarkWithPod2RV, added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:                "allowWatchBookmarks=true, sendInitialEvents=false, RV=beforeResync",
+			rv:                  rvBeforeResync,
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod3)},
+			expectCacher:        []watch.Event{added(pod3), bookmarkWithPod3RV},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=false, RV=beforeResync",
+			rv:                rvBeforeResync,
+			sendInitialEvents: ptr.To(false),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expect:            []watch.Event{added(pod3)},
+		},
+		{
+			name:              "allowWatchBookmarks=false, sendInitialEvents=true, RV=beforeResync",
+			rv:                rvBeforeResync,
+			sendInitialEvents: ptr.To(true),
+			podsBeforeWatch:   []*example.Pod{pod1},
+			podsBeforeResync:  []*example.Pod{pod2},
+			podsAfterResync:   []*example.Pod{pod3},
+			expectCacher:      []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:             "legacy, RV=beforeResync",
+			rv:               rvBeforeResync,
+			podsBeforeWatch:  []*example.Pod{pod1},
+			podsBeforeResync: []*example.Pod{pod2},
+			podsAfterResync:  []*example.Pod{pod3},
+			expect:           []watch.Event{added(pod3)},
+		},
+		{
+			name:                "compacted at watch RV before resync, RV=beforeWatch",
+			rv:                  rvBeforeWatch,
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod1,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted past watch RV before resync, RV=beforeWatch",
+			rv:                  rvBeforeWatch,
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted before resync, sendInitialEvents=false, RV=unset",
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted before resync, sendInitialEvents=false, RV=0",
+			rv:                  rvZero,
+			sendInitialEvents:   ptr.To(false),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted before resync, legacy, RV=unset",
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted before resync, legacy, RV=0",
+			rv:                  rvZero,
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expect:              []watch.Event{added(pod1), added(pod2), added(pod3)},
+		},
+		{
+			name:                "compacted before resync, allowWatchBookmarks=true, sendInitialEvents=true",
+			allowWatchBookmarks: true,
+			sendInitialEvents:   ptr.To(true),
+			podsBeforeWatch:     []*example.Pod{pod1},
+			podsBeforeResync:    []*example.Pod{pod2},
+			compactBeforeResync: pod2,
+			podsAfterResync:     []*example.Pod{pod3},
+			expectEtcd:          []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3)},
+			expectCacher:        []watch.Event{added(pod1), initialBookmarkWithPod1RV, added(pod2), added(pod3), bookmarkWithPod3RV},
+		},
+	}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expectedOut := tt.expect
+			if isCacher && tt.expectCacher != nil {
+				expectedOut = tt.expectCacher
+			}
+			if !isCacher && tt.expectEtcd != nil {
+				expectedOut = tt.expectEtcd
+			}
+			if expectedOut == nil {
+				t.Skip("scenario not supported")
+			}
+			ns := fmt.Sprintf("ns-%d", idx)
+			createPods := func(pods []*example.Pod) {
+				for _, pod := range pods {
+					pod.Namespace = ns
+					pod.ResourceVersion = ""
+					require.NoError(t, store.Create(ctx, computePodKey(pod), pod, pod, 0))
+				}
+			}
+
+			beforeTestRV, err := store.GetCurrentResourceVersion(ctx)
+			require.NoError(t, err)
+
+			createPods(tt.podsBeforeWatch)
+
+			beforeWatchRV, err := store.GetCurrentResourceVersion(ctx)
+			require.NoError(t, err)
+			beforeResyncRV := beforeWatchRV + uint64(len(tt.podsBeforeResync))
+			afterResyncRV := beforeResyncRV + uint64(len(tt.podsAfterResync))
+
+			var rv string
+			switch tt.rv {
+			case rvUnset, rvZero, rvOne:
+				rv = string(tt.rv)
+			case rvBeforeTest:
+				rv = strconv.FormatUint(beforeTestRV, 10)
+			case rvBeforeWatch:
+				rv = strconv.FormatUint(beforeWatchRV, 10)
+			case rvBeforeResync:
+				rv = strconv.FormatUint(beforeResyncRV, 10)
+			case rvAfterResync:
+				rv = strconv.FormatUint(afterResyncRV, 10)
+			default:
+				t.Fatalf("unexpected rv: %q", tt.rv)
+			}
+
+			pred := storage.Everything
+			pred.AllowWatchBookmarks = tt.allowWatchBookmarks
+			var (
+				w        watch.Interface
+				watchErr error
+			)
+			watchOpened := make(chan struct{})
+			go func() {
+				defer close(watchOpened)
+				w, watchErr = store.Watch(ctx, fmt.Sprintf("/pods/%s", ns), storage.ListOptions{
+					ResourceVersion:   rv,
+					SendInitialEvents: tt.sendInitialEvents,
+					Predicate:         pred,
+					Recursive:         true,
+				})
+			}()
+			time.Sleep(100 * time.Millisecond)
+			if resync != nil {
+				resync()
+			}
+
+			createPods(tt.podsBeforeResync)
+			if tt.compactBeforeResync != nil {
+				compact(ctx, t, tt.compactBeforeResync.ResourceVersion)
+			}
+			if resync != nil {
+				resync()
+			}
+			createPods(tt.podsAfterResync)
+			if triggerBookmarks != nil {
+				triggerBookmarks()
+			}
+
+			<-watchOpened
+			require.NoError(t, watchErr)
+			defer w.Stop()
+
+			initialBookmarkWithPod1RV.Object.(*example.Pod).ResourceVersion = pod1.ResourceVersion
+			initialBookmarkWithPod2RV.Object.(*example.Pod).ResourceVersion = pod2.ResourceVersion
+			initialBookmarkWithPod3RV.Object.(*example.Pod).ResourceVersion = pod3.ResourceVersion
+			bookmarkWithPod3RV.Object.(*example.Pod).ResourceVersion = pod3.ResourceVersion
+
+			TestCheckResultsInStrictOrder(t, w, expectedOut)
+		})
+	}
 }
 
 func makePod(namePrefix string) *example.Pod {

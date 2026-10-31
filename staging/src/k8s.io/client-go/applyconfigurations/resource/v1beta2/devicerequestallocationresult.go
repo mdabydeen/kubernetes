@@ -94,6 +94,10 @@ type DeviceRequestAllocationResultApplyConfiguration struct {
 	//
 	// This field is populated only for devices that allow multiple allocations.
 	// All capacity entries are included, even if the consumed amount is zero.
+	// The domain prefix in the capacity name may be omitted if it is
+	// the same as the driver name.
+	//
+	// ConsumedCapacity may have at most 32 entries. The values must not be negative.
 	ConsumedCapacity map[resourcev1beta2.QualifiedName]resource.Quantity `json:"consumedCapacity,omitempty"`
 	// skipNodeOperations lists node-local resource operations (gRPC calls)
 	// that will be skipped for this allocated device when determining whether

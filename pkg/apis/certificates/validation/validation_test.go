@@ -42,9 +42,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/util/certificate/csr"
+	"k8s.io/component-base/featuregate"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	capi "k8s.io/kubernetes/pkg/apis/certificates"
 	"k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/features"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 )
@@ -62,9 +66,13 @@ func TestValidateCertificateSigningRequestCreate(t *testing.T) {
 	// It is of the form <fqdn(253)>/<resource-namespace(63)>.<resource-name(253)>
 	maxLengthFQDN := fmt.Sprintf("%s.%s.%s.%s", strings.Repeat("a", 63), strings.Repeat("a", 63), strings.Repeat("a", 63), strings.Repeat("a", 61))
 	maxLengthSignerName := fmt.Sprintf("%s/%s.%s", maxLengthFQDN, strings.Repeat("a", 63), strings.Repeat("a", 253))
+
+	mldsaCSR := newCSRPEMWithMLDSA(t)
+
 	tests := map[string]struct {
-		csr  capi.CertificateSigningRequest
-		errs field.ErrorList
+		csr          capi.CertificateSigningRequest
+		enabledGates []featuregate.Feature
+		errs         field.ErrorList
 	}{
 		"CSR with empty request data should fail": {
 			csr: capi.CertificateSigningRequest{
@@ -396,25 +404,6 @@ func TestValidateCertificateSigningRequestCreate(t *testing.T) {
 				},
 			},
 		},
-		"both approved and denied conditions": {
-			csr: capi.CertificateSigningRequest{
-				ObjectMeta: validObjectMeta,
-				Spec: capi.CertificateSigningRequestSpec{
-					Usages:     validUsages,
-					Request:    newCSRPEM(t),
-					SignerName: validSignerName,
-				},
-				Status: capi.CertificateSigningRequestStatus{
-					Conditions: []capi.CertificateSigningRequestCondition{
-						{Type: capi.CertificateApproved, Status: core.ConditionTrue},
-						{Type: capi.CertificateDenied, Status: core.ConditionTrue},
-					},
-				},
-			},
-			errs: field.ErrorList{
-				field.Invalid(field.NewPath("status", "conditions"), capi.CertificateDenied, "Approved and Denied conditions are mutually exclusive").WithOrigin("zeroOrOneOf").MarkCoveredByDeclarative(),
-			},
-		},
 		"approved and failed conditions allowed": {
 			csr: capi.CertificateSigningRequest{
 				ObjectMeta: validObjectMeta,
@@ -431,9 +420,70 @@ func TestValidateCertificateSigningRequestCreate(t *testing.T) {
 				},
 			},
 		},
+		"valid csr spec with request signed by an ML-DSA key": {
+			csr: capi.CertificateSigningRequest{
+				ObjectMeta: validObjectMeta,
+				Spec: capi.CertificateSigningRequestSpec{
+					Usages:     []capi.KeyUsage{capi.UsageDigitalSignature},
+					Request:    mldsaCSR,
+					SignerName: validSignerName,
+				},
+			},
+			enabledGates: []featuregate.Feature{
+				features.CertificateSigningRequestMLDSA,
+			},
+		},
+		"invalid csr spec with request signed by an ML-DSA key, gate not enabled": {
+			csr: capi.CertificateSigningRequest{
+				ObjectMeta: validObjectMeta,
+				Spec: capi.CertificateSigningRequestSpec{
+					Usages:     []capi.KeyUsage{capi.UsageDigitalSignature},
+					Request:    mldsaCSR,
+					SignerName: validSignerName,
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(field.NewPath("spec").Child("request"), mldsaCSR, "ML-DSA keys cannot be used for requests"),
+			},
+		},
+		"invalid csr spec with request signed by an ML-DSA key, missing one of the at least one of key usages required for ML-DSA": {
+			csr: capi.CertificateSigningRequest{
+				ObjectMeta: validObjectMeta,
+				Spec: capi.CertificateSigningRequestSpec{
+					Usages:     []capi.KeyUsage{capi.UsageClientAuth},
+					Request:    mldsaCSR,
+					SignerName: validSignerName,
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(specPath.Child("usages"), []capi.KeyUsage{capi.UsageClientAuth}, fmt.Sprintf("When using ML-DSA keys, at least one of %v usages are required", mldsaAtLeastOneOfUsages.List())),
+			},
+			enabledGates: []featuregate.Feature{
+				features.CertificateSigningRequestMLDSA,
+			},
+		},
+		"invalid csr spec with request signed by an ML-DSA key, contains a forbidden key usage": {
+			csr: capi.CertificateSigningRequest{
+				ObjectMeta: validObjectMeta,
+				Spec: capi.CertificateSigningRequestSpec{
+					Usages:     []capi.KeyUsage{capi.UsageDigitalSignature, capi.UsageKeyEncipherment},
+					Request:    mldsaCSR,
+					SignerName: validSignerName,
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(specPath.Child("usages").Index(1), capi.UsageKeyEncipherment, fmt.Sprintf("When using ML-DSA keys, the usages %v are not allowed", mldsaDisallowedUsages.List())),
+			},
+			enabledGates: []featuregate.Feature{
+				features.CertificateSigningRequestMLDSA,
+			},
+		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			for _, gate := range test.enabledGates {
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, gate, true)
+			}
 			el := ValidateCertificateSigningRequestCreate(&test.csr)
 			if !reflect.DeepEqual(el, test.errs) {
 				t.Errorf("returned and expected errors did not match - expected\n%v\nbut got\n%v", test.errs.ToAggregate(), el.ToAggregate())
@@ -472,6 +522,36 @@ func newCSRPEM(t *testing.T) []byte {
 	return p
 }
 
+func newCSRPEMWithMLDSA(t *testing.T) []byte {
+	template := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			Organization: []string{"testing-org"},
+		},
+	}
+
+	key, err := mldsa.GenerateKey(mldsa.MLDSA44())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, template, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	csrPemBlock := &pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csrDER,
+	}
+
+	p := pem.EncodeToMemory(csrPemBlock)
+	if p == nil {
+		t.Fatal("invalid pem block")
+	}
+
+	return p
+}
+
 func Test_getValidationOptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -486,14 +566,6 @@ func Test_getValidationOptions(t *testing.T) {
 		name:   "strict update",
 		oldCSR: &capi.CertificateSigningRequest{},
 		want:   certificateValidationOptions{},
-	}, {
-		name: "compatible update, approved+denied",
-		oldCSR: &capi.CertificateSigningRequest{Status: capi.CertificateSigningRequestStatus{
-			Conditions: []capi.CertificateSigningRequestCondition{{Type: capi.CertificateApproved}, {Type: capi.CertificateDenied}},
-		}},
-		want: certificateValidationOptions{
-			allowBothApprovedAndDenied: true,
-		},
 	}, {
 		name:   "compatible update, legacy signerName",
 		oldCSR: &capi.CertificateSigningRequest{Spec: capi.CertificateSigningRequestSpec{SignerName: capi.LegacyUnknownSignerName}},
@@ -1033,17 +1105,6 @@ func Test_validateCertificateSigningRequestOptions(t *testing.T) {
 			strictErrs:  []string{`status.conditions[0].type: Required value`},
 		},
 		{
-			name: "approved and denied",
-			csr: &capi.CertificateSigningRequest{
-				ObjectMeta: validObjectMeta, Spec: validSpec,
-				Status: capi.CertificateSigningRequestStatus{
-					Conditions: []capi.CertificateSigningRequestCondition{{Type: capi.CertificateApproved, Status: core.ConditionTrue}, {Type: capi.CertificateDenied, Status: core.ConditionTrue}},
-				},
-			},
-			lenientOpts: certificateValidationOptions{allowBothApprovedAndDenied: true},
-			strictErrs:  []string{`status.conditions: Invalid value: "Denied": Approved and Denied conditions are mutually exclusive`},
-		},
-		{
 			name: "duplicate condition",
 			csr: &capi.CertificateSigningRequest{
 				ObjectMeta: validObjectMeta, Spec: validSpec,
@@ -1127,17 +1188,6 @@ func Test_validateCertificateSigningRequestOptions(t *testing.T) {
 			},
 			lenientOpts:   certificateValidationOptions{allowArbitraryCertificate: true},
 			strictRegexes: []regexp.Regexp{*regexp.MustCompile(`status.certificate: Invalid value: "\<certificate data\>": (asn1: structure error: sequence tag mismatch|x509: invalid RDNSequence)`)},
-		},
-		{
-			name: "approved and denied",
-			csr: &capi.CertificateSigningRequest{
-				ObjectMeta: validObjectMeta, Spec: validSpec,
-				Status: capi.CertificateSigningRequestStatus{
-					Conditions: []capi.CertificateSigningRequestCondition{{Type: capi.CertificateApproved, Status: core.ConditionTrue}, {Type: capi.CertificateDenied, Status: core.ConditionTrue}},
-				},
-			},
-			lenientOpts: certificateValidationOptions{allowBothApprovedAndDenied: true},
-			strictErrs:  []string{`status.conditions: Invalid value: "Denied": Approved and Denied conditions are mutually exclusive`},
 		},
 	}
 

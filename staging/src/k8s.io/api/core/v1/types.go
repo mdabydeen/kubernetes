@@ -64,6 +64,7 @@ type VolumeSource struct {
 	EmptyDir *EmptyDirVolumeSource `json:"emptyDir,omitempty" protobuf:"bytes,2,opt,name=emptyDir"`
 	// gcePersistentDisk represents a GCE Disk resource that is attached to a
 	// kubelet's host machine and then exposed to the pod.
+	//
 	// Deprecated: GCEPersistentDisk is deprecated. All operations for the in-tree
 	// gcePersistentDisk type are redirected to the pd.csi.storage.gke.io CSI driver.
 	// More info: https://kubernetes.io/docs/concepts/storage/volumes#gcepersistentdisk
@@ -71,12 +72,14 @@ type VolumeSource struct {
 	GCEPersistentDisk *GCEPersistentDiskVolumeSource `json:"gcePersistentDisk,omitempty" protobuf:"bytes,3,opt,name=gcePersistentDisk"`
 	// awsElasticBlockStore represents an AWS Disk resource that is attached to a
 	// kubelet's host machine and then exposed to the pod.
+	//
 	// Deprecated: AWSElasticBlockStore is deprecated. All operations for the in-tree
 	// awsElasticBlockStore type are redirected to the ebs.csi.aws.com CSI driver.
 	// More info: https://kubernetes.io/docs/concepts/storage/volumes#awselasticblockstore
 	// +optional
 	AWSElasticBlockStore *AWSElasticBlockStoreVolumeSource `json:"awsElasticBlockStore,omitempty" protobuf:"bytes,4,opt,name=awsElasticBlockStore"`
 	// gitRepo represents a git repository at a particular revision.
+	//
 	// Deprecated: GitRepo is deprecated. To provision a container with a git repo, mount an
 	// EmptyDir into an InitContainer that clones the repo using git, then mount the EmptyDir
 	// into the Pod's container.
@@ -96,6 +99,7 @@ type VolumeSource struct {
 	// +optional
 	ISCSI *ISCSIVolumeSource `json:"iscsi,omitempty" protobuf:"bytes,8,opt,name=iscsi"`
 	// glusterfs represents a Glusterfs mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: Glusterfs is deprecated and the in-tree glusterfs type is no longer supported.
 	// +optional
 	Glusterfs *GlusterfsVolumeSource `json:"glusterfs,omitempty" protobuf:"bytes,9,opt,name=glusterfs"`
@@ -105,25 +109,30 @@ type VolumeSource struct {
 	// +optional
 	PersistentVolumeClaim *PersistentVolumeClaimVolumeSource `json:"persistentVolumeClaim,omitempty" protobuf:"bytes,10,opt,name=persistentVolumeClaim"`
 	// rbd represents a Rados Block Device mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: RBD is deprecated and the in-tree rbd type is no longer supported.
 	// +optional
 	RBD *RBDVolumeSource `json:"rbd,omitempty" protobuf:"bytes,11,opt,name=rbd"`
 	// flexVolume represents a generic volume resource that is
 	// provisioned/attached using an exec based plugin.
+	//
 	// Deprecated: FlexVolume is deprecated. Consider using a CSIDriver instead.
 	// +optional
 	FlexVolume *FlexVolumeSource `json:"flexVolume,omitempty" protobuf:"bytes,12,opt,name=flexVolume"`
 	// cinder represents a cinder volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: Cinder is deprecated. All operations for the in-tree cinder type
 	// are redirected to the cinder.csi.openstack.org CSI driver.
 	// More info: https://examples.k8s.io/mysql-cinder-pd/README.md
 	// +optional
 	Cinder *CinderVolumeSource `json:"cinder,omitempty" protobuf:"bytes,13,opt,name=cinder"`
 	// cephfs represents a Ceph FS mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: CephFS is deprecated and the in-tree cephfs type is no longer supported.
 	// +optional
 	CephFS *CephFSVolumeSource `json:"cephfs,omitempty" protobuf:"bytes,14,opt,name=cephfs"`
 	// flocker represents a Flocker volume attached to a kubelet's host machine. This depends on the Flocker control service being running.
+	//
 	// Deprecated: Flocker is deprecated and the in-tree flocker type is no longer supported.
 	// +optional
 	Flocker *FlockerVolumeSource `json:"flocker,omitempty" protobuf:"bytes,15,opt,name=flocker"`
@@ -134,6 +143,7 @@ type VolumeSource struct {
 	// +optional
 	FC *FCVolumeSource `json:"fc,omitempty" protobuf:"bytes,17,opt,name=fc"`
 	// azureFile represents an Azure File Service mount on the host and bind mount to the pod.
+	//
 	// Deprecated: AzureFile is deprecated. All operations for the in-tree azureFile type
 	// are redirected to the file.csi.azure.com CSI driver.
 	// +optional
@@ -142,20 +152,24 @@ type VolumeSource struct {
 	// +optional
 	ConfigMap *ConfigMapVolumeSource `json:"configMap,omitempty" protobuf:"bytes,19,opt,name=configMap"`
 	// vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: VsphereVolume is deprecated. All operations for the in-tree vsphereVolume type
 	// are redirected to the csi.vsphere.vmware.com CSI driver.
 	// +optional
 	VsphereVolume *VsphereVirtualDiskVolumeSource `json:"vsphereVolume,omitempty" protobuf:"bytes,20,opt,name=vsphereVolume"`
 	// quobyte represents a Quobyte mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: Quobyte is deprecated and the in-tree quobyte type is no longer supported.
 	// +optional
 	Quobyte *QuobyteVolumeSource `json:"quobyte,omitempty" protobuf:"bytes,21,opt,name=quobyte"`
 	// azureDisk represents an Azure Data Disk mount on the host and bind mount to the pod.
+	//
 	// Deprecated: AzureDisk is deprecated. All operations for the in-tree azureDisk type
 	// are redirected to the disk.csi.azure.com CSI driver.
 	// +optional
 	AzureDisk *AzureDiskVolumeSource `json:"azureDisk,omitempty" protobuf:"bytes,22,opt,name=azureDisk"`
 	// photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine.
+	//
 	// Deprecated: PhotonPersistentDisk is deprecated and the in-tree photonPersistentDisk type is no longer supported.
 	// +optional
 	PhotonPersistentDisk *PhotonPersistentDiskVolumeSource `json:"photonPersistentDisk,omitempty" protobuf:"bytes,23,opt,name=photonPersistentDisk"`
@@ -163,15 +177,18 @@ type VolumeSource struct {
 	// +optional
 	Projected *ProjectedVolumeSource `json:"projected,omitempty" protobuf:"bytes,26,opt,name=projected"`
 	// portworxVolume represents a portworx volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: PortworxVolume is deprecated. All operations for the in-tree portworxVolume type
 	// are redirected to the pxd.portworx.com CSI driver.
 	// +optional
 	PortworxVolume *PortworxVolumeSource `json:"portworxVolume,omitempty" protobuf:"bytes,24,opt,name=portworxVolume"`
 	// scaleIO represents a ScaleIO persistent volume attached and mounted on Kubernetes nodes.
+	//
 	// Deprecated: ScaleIO is deprecated and the in-tree scaleIO type is no longer supported.
 	// +optional
 	ScaleIO *ScaleIOVolumeSource `json:"scaleIO,omitempty" protobuf:"bytes,25,opt,name=scaleIO"`
 	// storageos represents a StorageOS volume attached and mounted on Kubernetes nodes.
+	//
 	// Deprecated: StorageOS is deprecated and the in-tree storageos type is no longer supported.
 	// +optional
 	StorageOS *StorageOSVolumeSource `json:"storageos,omitempty" protobuf:"bytes,27,opt,name=storageos"`
@@ -244,6 +261,7 @@ type PersistentVolumeClaimVolumeSource struct {
 type PersistentVolumeSource struct {
 	// gcePersistentDisk represents a GCE Disk resource that is attached to a
 	// kubelet's host machine and then exposed to the pod. Provisioned by an admin.
+	//
 	// Deprecated: GCEPersistentDisk is deprecated. All operations for the in-tree
 	// gcePersistentDisk type are redirected to the pd.csi.storage.gke.io CSI driver.
 	// More info: https://kubernetes.io/docs/concepts/storage/volumes#gcepersistentdisk
@@ -251,6 +269,7 @@ type PersistentVolumeSource struct {
 	GCEPersistentDisk *GCEPersistentDiskVolumeSource `json:"gcePersistentDisk,omitempty" protobuf:"bytes,1,opt,name=gcePersistentDisk"`
 	// awsElasticBlockStore represents an AWS Disk resource that is attached to a
 	// kubelet's host machine and then exposed to the pod.
+	//
 	// Deprecated: AWSElasticBlockStore is deprecated. All operations for the in-tree
 	// awsElasticBlockStore type are redirected to the ebs.csi.aws.com CSI driver.
 	// More info: https://kubernetes.io/docs/concepts/storage/volumes#awselasticblockstore
@@ -265,6 +284,7 @@ type PersistentVolumeSource struct {
 	HostPath *HostPathVolumeSource `json:"hostPath,omitempty" protobuf:"bytes,3,opt,name=hostPath"`
 	// glusterfs represents a Glusterfs volume that is attached to a host and
 	// exposed to the pod. Provisioned by an admin.
+	//
 	// Deprecated: Glusterfs is deprecated and the in-tree glusterfs type is no longer supported.
 	// More info: https://examples.k8s.io/volumes/glusterfs/README.md
 	// +optional
@@ -274,6 +294,7 @@ type PersistentVolumeSource struct {
 	// +optional
 	NFS *NFSVolumeSource `json:"nfs,omitempty" protobuf:"bytes,5,opt,name=nfs"`
 	// rbd represents a Rados Block Device mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: RBD is deprecated and the in-tree rbd type is no longer supported.
 	// More info: https://examples.k8s.io/volumes/rbd/README.md
 	// +optional
@@ -283,12 +304,14 @@ type PersistentVolumeSource struct {
 	// +optional
 	ISCSI *ISCSIPersistentVolumeSource `json:"iscsi,omitempty" protobuf:"bytes,7,opt,name=iscsi"`
 	// cinder represents a cinder volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: Cinder is deprecated. All operations for the in-tree cinder type
 	// are redirected to the cinder.csi.openstack.org CSI driver.
 	// More info: https://examples.k8s.io/mysql-cinder-pd/README.md
 	// +optional
 	Cinder *CinderPersistentVolumeSource `json:"cinder,omitempty" protobuf:"bytes,8,opt,name=cinder"`
 	// cephfs represents a Ceph FS mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: CephFS is deprecated and the in-tree cephfs type is no longer supported.
 	// +optional
 	CephFS *CephFSPersistentVolumeSource `json:"cephfs,omitempty" protobuf:"bytes,9,opt,name=cephfs"`
@@ -296,43 +319,52 @@ type PersistentVolumeSource struct {
 	// +optional
 	FC *FCVolumeSource `json:"fc,omitempty" protobuf:"bytes,10,opt,name=fc"`
 	// flocker represents a Flocker volume attached to a kubelet's host machine and exposed to the pod for its usage. This depends on the Flocker control service being running.
+	//
 	// Deprecated: Flocker is deprecated and the in-tree flocker type is no longer supported.
 	// +optional
 	Flocker *FlockerVolumeSource `json:"flocker,omitempty" protobuf:"bytes,11,opt,name=flocker"`
 	// flexVolume represents a generic volume resource that is
 	// provisioned/attached using an exec based plugin.
+	//
 	// Deprecated: FlexVolume is deprecated. Consider using a CSIDriver instead.
 	// +optional
 	FlexVolume *FlexPersistentVolumeSource `json:"flexVolume,omitempty" protobuf:"bytes,12,opt,name=flexVolume"`
 	// azureFile represents an Azure File Service mount on the host and bind mount to the pod.
+	//
 	// Deprecated: AzureFile is deprecated. All operations for the in-tree azureFile type
 	// are redirected to the file.csi.azure.com CSI driver.
 	// +optional
 	AzureFile *AzureFilePersistentVolumeSource `json:"azureFile,omitempty" protobuf:"bytes,13,opt,name=azureFile"`
 	// vsphereVolume represents a vSphere volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: VsphereVolume is deprecated. All operations for the in-tree vsphereVolume type
 	// are redirected to the csi.vsphere.vmware.com CSI driver.
 	// +optional
 	VsphereVolume *VsphereVirtualDiskVolumeSource `json:"vsphereVolume,omitempty" protobuf:"bytes,14,opt,name=vsphereVolume"`
 	// quobyte represents a Quobyte mount on the host that shares a pod's lifetime.
+	//
 	// Deprecated: Quobyte is deprecated and the in-tree quobyte type is no longer supported.
 	// +optional
 	Quobyte *QuobyteVolumeSource `json:"quobyte,omitempty" protobuf:"bytes,15,opt,name=quobyte"`
 	// azureDisk represents an Azure Data Disk mount on the host and bind mount to the pod.
+	//
 	// Deprecated: AzureDisk is deprecated. All operations for the in-tree azureDisk type
 	// are redirected to the disk.csi.azure.com CSI driver.
 	// +optional
 	AzureDisk *AzureDiskVolumeSource `json:"azureDisk,omitempty" protobuf:"bytes,16,opt,name=azureDisk"`
 	// photonPersistentDisk represents a PhotonController persistent disk attached and mounted on kubelets host machine.
+	//
 	// Deprecated: PhotonPersistentDisk is deprecated and the in-tree photonPersistentDisk type is no longer supported.
 	// +optional
 	PhotonPersistentDisk *PhotonPersistentDiskVolumeSource `json:"photonPersistentDisk,omitempty" protobuf:"bytes,17,opt,name=photonPersistentDisk"`
 	// portworxVolume represents a portworx volume attached and mounted on kubelets host machine.
+	//
 	// Deprecated: PortworxVolume is deprecated. All operations for the in-tree portworxVolume type
 	// are redirected to the pxd.portworx.com CSI driver.
 	// +optional
 	PortworxVolume *PortworxVolumeSource `json:"portworxVolume,omitempty" protobuf:"bytes,18,opt,name=portworxVolume"`
 	// scaleIO represents a ScaleIO persistent volume attached and mounted on Kubernetes nodes.
+	//
 	// Deprecated: ScaleIO is deprecated and the in-tree scaleIO type is no longer supported.
 	// +optional
 	ScaleIO *ScaleIOPersistentVolumeSource `json:"scaleIO,omitempty" protobuf:"bytes,19,opt,name=scaleIO"`
@@ -340,6 +372,7 @@ type PersistentVolumeSource struct {
 	// +optional
 	Local *LocalVolumeSource `json:"local,omitempty" protobuf:"bytes,20,opt,name=local"`
 	// storageos represents a StorageOS volume that is attached to the kubelet's host machine and mounted into the pod.
+	//
 	// Deprecated: StorageOS is deprecated and the in-tree storageos type is no longer supported.
 	// More info: https://examples.k8s.io/volumes/storageos/README.md
 	// +optional
@@ -1551,7 +1584,7 @@ type AWSElasticBlockStoreVolumeSource struct {
 // Git repo volumes do not support ownership management.
 // Git repo volumes support SELinux relabeling.
 //
-// DEPRECATED: GitRepo is deprecated. To provision a container with a git repo, mount an
+// Deprecated: GitRepo is deprecated. To provision a container with a git repo, mount an
 // EmptyDir into an InitContainer that clones the repo using git, then mount the EmptyDir
 // into the Pod's container.
 type GitRepoVolumeSource struct {
@@ -3151,7 +3184,11 @@ type Capabilities struct {
 // ResourceRequirements describes the compute resource requirements.
 type ResourceRequirements struct {
 	// limits describes the maximum amount of compute resources allowed.
-	// More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+	// For kubelet cgroup enforcement:
+	// - cpu and memory: a limit of 0 is treated the same as an unspecified limit. If
+	//   neither the container nor the pod specifies a limit, the resource is not limited.
+	// - hugepages: an unspecified limit is treated the same as a limit of 0.
+	// More details: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
 	// +optional
 	Limits ResourceList `json:"limits,omitempty" protobuf:"bytes,1,rep,name=limits,casttype=ResourceList,castkey=ResourceName"`
 	// requests describes the minimum amount of compute resources required.
@@ -3694,7 +3731,6 @@ type ContainerStatus struct {
 	// +listMapKey=mountPath
 	VolumeMounts []VolumeMountStatus `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,12,rep,name=volumeMounts"`
 	// user represents user identity information initially attached to the first process of the container
-	// +featureGate=SupplementalGroupsPolicy
 	// +optional
 	User *ContainerUser `json:"user,omitempty" protobuf:"bytes,13,opt,name=user,casttype=ContainerUser"`
 	// allocatedResourcesStatus represents the status of various resources
@@ -3825,6 +3861,7 @@ const (
 	PodFailed PodPhase = "Failed"
 	// PodUnknown means that for some reason the state of the pod could not be obtained, typically due
 	// to an error in communicating with the host of the pod.
+	//
 	// Deprecated: It isn't being set since 2015 (74da3b14b0c0f658b3bb8d2def5094686d0e9095)
 	PodUnknown PodPhase = "Unknown"
 )
@@ -4493,6 +4530,7 @@ type PodSpec struct {
 	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=name
+	// +k8s:alpha(since: "1.38")=+k8s:required
 	Containers []Container `json:"containers" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,2,rep,name=containers"`
 	// ephemeralContainers is the list of ephemeral containers run in this pod. Ephemeral containers may be run in an existing
 	// pod to perform user-initiated actions such as debugging. This list cannot be specified when
@@ -4548,6 +4586,7 @@ type PodSpec struct {
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty" protobuf:"bytes,8,opt,name=serviceAccountName"`
 	// serviceAccount is a deprecated alias for ServiceAccountName.
+	//
 	// Deprecated: Use serviceAccountName instead.
 	// +optional
 	DeprecatedServiceAccount string `json:"serviceAccount,omitempty" protobuf:"bytes,9,opt,name=serviceAccount"`
@@ -4774,10 +4813,14 @@ type PodSpec struct {
 	//
 	// This field enables fine-grained control over resource allocation for the
 	// entire pod, allowing resource sharing among containers in a pod.
-	// TODO: For beta graduation, expand this comment with a detailed explanation.
 	//
-	// This is an alpha field and requires enabling the PodLevelResources feature
-	// gate.
+	// If a limit is not specified at the pod level, the pod is limited by the aggregate of
+	// its container limits:
+	// - For cpu and memory, the aggregate is used only if every init and regular container
+	//   specifies a limit; otherwise the pod is not limited for that resource.
+	// - For hugepages, the container limits are summed and unspecified values are treated as 0.
+	//
+	// More details: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
 	//
 	// +featureGate=PodLevelResources
 	// +optional
@@ -4809,9 +4852,11 @@ type PodSpec struct {
 	// the Pod is treated as a single unit in all of these aspects.
 	// The group object referenced by this field may not exist at the time the
 	// Pod is created.
-	// This field is immutable, but a group object with the same name may be
-	// recreated with different policies. Doing this during pod scheduling
-	// may result in the placement not conforming to the expected policies.
+	// This field is immutable. The scheduler cannot distinguish PodGroup runtime
+	// instances that reuse the same namespace and name. Controllers should use a
+	// new PodGroup name for each runtime instance. Reusing a name for a PodGroup
+	// with different policies may result in Pod placement not conforming to the
+	// expected policies.
 	//
 	// +featureGate=GenericWorkload
 	// +optional
@@ -5260,11 +5305,8 @@ type PodSecurityContext struct {
 	SupplementalGroups []int64 `json:"supplementalGroups,omitempty" protobuf:"varint,4,rep,name=supplementalGroups"`
 	// supplementalGroupsPolicy defines how supplemental groups of the first container processes are calculated.
 	// Valid values are "Merge" and "Strict". If not specified, "Merge" is used.
-	// (Alpha) Using the field requires the SupplementalGroupsPolicy feature gate to be enabled
-	// and the container runtime must implement support for this feature.
+	// The container runtime must implement support for this feature.
 	// Note that this field cannot be set when spec.os.name is windows.
-	// TODO: update the default value to "Merge" when spec.os.name is not windows in v1.34
-	// +featureGate=SupplementalGroupsPolicy
 	// +optional
 	SupplementalGroupsPolicy *SupplementalGroupsPolicy `json:"supplementalGroupsPolicy,omitempty" protobuf:"bytes,12,opt,name=supplementalGroupsPolicy"`
 	// fsGroup is a special supplemental group that applies to all containers in a pod.
@@ -5823,6 +5865,7 @@ type PodStatus struct {
 	// Status of resources resize desired for pod's containers.
 	// It is empty if no resources resize is pending.
 	// Any changes to container resources will automatically set this to "Proposed"
+	//
 	// Deprecated: Resize status is moved to two pod conditions PodResizePending and PodResizeInProgress.
 	// PodResizePending will track states where the spec has been resized, but the Kubelet has not yet allocated the resources.
 	// PodResizeInProgress will track in-progress resizes, and should be present whenever allocated resources != acknowledged resources.
@@ -6022,6 +6065,7 @@ type ReplicationControllerSpec struct {
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template
 	// +optional
 	// +k8s:alpha(since: "1.37")=+k8s:optional
+	// +k8s:alpha(since: "1.38")=+k8s:subfield(spec)=+k8s:subfield(restartPolicy)=+k8s:eq="Always"
 	Template *PodTemplateSpec `json:"template,omitempty" protobuf:"bytes,3,opt,name=template"`
 }
 
@@ -6263,6 +6307,7 @@ const (
 	// ServiceTrafficDistributionPreferClose is the original name of "PreferSameZone".
 	// Despite the generic-sounding name, it has exactly the same meaning as
 	// "PreferSameZone".
+	//
 	// Deprecated: use "PreferSameZone" instead.
 	ServiceTrafficDistributionPreferClose = "PreferClose"
 )
@@ -6484,6 +6529,7 @@ type ServiceSpec struct {
 	// This feature depends on whether the underlying cloud-provider supports specifying
 	// the loadBalancerIP when a load balancer is created.
 	// This field will be ignored if the cloud-provider does not support the feature.
+	//
 	// Deprecated: This field was under-specified and its meaning varies across implementations.
 	// Using it is non-portable and it may not support dual-stack.
 	// Users are encouraged to use implementation-specific annotations when available.
@@ -6820,8 +6866,6 @@ type ServiceAccountList struct {
 //
 // Endpoints is a legacy API and does not contain information about all Service features.
 // Use discoveryv1.EndpointSlice for complete information about Service endpoints.
-//
-// Deprecated: This API is deprecated in v1.33+. Use discoveryv1.EndpointSlice.
 type Endpoints struct {
 	metav1.TypeMeta `json:""`
 	// Standard object's metadata.
@@ -6854,8 +6898,6 @@ type Endpoints struct {
 //
 //	a: [ 10.10.1.1:8675, 10.10.2.2:8675 ],
 //	b: [ 10.10.1.1:309, 10.10.2.2:309 ]
-//
-// Deprecated: This API is deprecated in v1.33+.
 type EndpointSubset struct {
 	// IP addresses which offer the related ports that are marked as ready. These endpoints
 	// should be considered safe for load balancers and clients to utilize.
@@ -6875,7 +6917,6 @@ type EndpointSubset struct {
 }
 
 // EndpointAddress is a tuple that describes single IP address.
-// Deprecated: This API is deprecated in v1.33+.
 // +structType=atomic
 type EndpointAddress struct {
 	// The IP of this endpoint.
@@ -6894,7 +6935,6 @@ type EndpointAddress struct {
 }
 
 // EndpointPort is a tuple that describes a single port.
-// Deprecated: This API is deprecated in v1.33+.
 // +structType=atomic
 type EndpointPort struct {
 	// The name of this port.  This must match the 'name' field in the
@@ -6936,7 +6976,6 @@ type EndpointPort struct {
 // +k8s:prerelease-lifecycle-gen:introduced=1.0
 
 // EndpointsList is a list of endpoints.
-// Deprecated: This API is deprecated in v1.33+.
 type EndpointsList struct {
 	metav1.TypeMeta `json:""`
 	// Standard list metadata.
@@ -7259,7 +7298,6 @@ type NodeStatus struct {
 	// +listType=atomic
 	RuntimeHandlers []NodeRuntimeHandler `json:"runtimeHandlers,omitempty" protobuf:"bytes,12,rep,name=runtimeHandlers"`
 	// Features describes the set of features implemented by the CRI implementation.
-	// +featureGate=SupplementalGroupsPolicy
 	// +optional
 	Features *NodeFeatures `json:"features,omitempty" protobuf:"bytes,13,rep,name=features"`
 	// DeclaredFeatures represents the features related to feature gates that are declared by the node.
@@ -7276,7 +7314,11 @@ type AttachedVolume struct {
 	// name of the attached volume
 	Name UniqueVolumeName `json:"name" protobuf:"bytes,1,rep,name=name"`
 
-	// devicePath represents the device path where the volume should be available
+	// devicePath represents the path where the attached volume is available on
+	// the node. On Linux nodes, this is the host block-device node (e.g. /dev/xvdX)
+	// that the kubelet uses to mount and format the volume. On Windows nodes there
+	// is no /dev device tree, so this carries the CSI VolumeID (the attach identity
+	// reported by the CSI driver) instead of a device path.
 	DevicePath string `json:"devicePath" protobuf:"bytes,2,rep,name=devicePath"`
 }
 
@@ -8636,7 +8678,6 @@ type ComponentCondition struct {
 // +k8s:prerelease-lifecycle-gen:introduced=1.0
 
 // ComponentStatus (and ComponentStatusList) holds the cluster validation info.
-// Deprecated: This API is deprecated in v1.19+
 type ComponentStatus struct {
 	metav1.TypeMeta `json:""`
 	// Standard object's metadata.
@@ -8658,7 +8699,6 @@ type ComponentStatus struct {
 // +k8s:prerelease-lifecycle-gen:introduced=1.0
 
 // Status of all the conditions for the component as a list of ComponentStatus objects.
-// Deprecated: This API is deprecated in v1.19+
 type ComponentStatusList struct {
 	metav1.TypeMeta `json:""`
 	// Standard list metadata.
@@ -9086,6 +9126,8 @@ type NodeAllocatableOverheadResources struct {
 	// - Container-level cgroup (limits only): Kubelet adds PerPod + PerContainer for each referencing container.
 	// This allows any single container to access the pod-level overhead, while the parent cgroup caps the total usage to account for PerPod exactly once.
 	// At least one of PerPod or PerContainer must be specified. Specifying neither is an invalid configuration.
+	// PerContainer overhead of a claim referenced by a non-restartable init container is counted towards
+	// the pod's peak resource calculation (see Pod `spec.initContainers`), not for the pod's entire duration.
 	// +optional
 	// +k8s:optional
 	PerContainer *resource.Quantity `json:"perContainer,omitempty" protobuf:"bytes,3,opt,name=perContainer"`

@@ -28,7 +28,6 @@ import (
 	"k8s.io/apiserver/pkg/storage/cacher/consistency"
 	"k8s.io/apiserver/pkg/storage/cacher/delegator"
 	"k8s.io/apiserver/pkg/storage/cacher/metrics"
-	"k8s.io/apiserver/pkg/storage/cacher/store"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
 )
@@ -81,16 +80,19 @@ func (c *CacheDelegator) EnableResourceSizeEstimation(keys storage.KeysFunc) err
 func (c *CacheDelegator) Delete(ctx context.Context, key string, out runtime.Object, preconditions *storage.Preconditions, validateDeletion storage.ValidateObjectFunc, cachedExistingObject runtime.Object, opts storage.DeleteOptions) error {
 	// Ignore the suggestion and try to pass down the current version of the object
 	// read from cache.
-	if elem, exists, err := c.cacher.watchCache.storage.GetByKey(key); err != nil {
+	if obj, exists, err := c.cacher.get(ctx, key, "0", true); err != nil {
 		klog.Errorf("GetByKey returned error: %v", err)
-	} else if exists {
+	} else if exists && preconditions.Check(key, obj) == nil {
 		// DeepCopy the object since we modify resource version when serializing the
 		// current object.
-		currObj := elem.(*store.Element).Object.DeepCopyObject()
-		return c.storage.Delete(ctx, key, out, preconditions, validateDeletion, currObj, opts)
+		return c.storage.Delete(ctx, key, out, preconditions, validateDeletion, obj.DeepCopyObject(), opts)
 	}
 	// If we couldn't get the object, fallback to no-suggestion.
 	return c.storage.Delete(ctx, key, out, preconditions, validateDeletion, nil, opts)
+}
+
+func (c *CacheDelegator) DeleteOnce(ctx context.Context, key string, origState *storage.ObjState, out runtime.Object) (bool, error) {
+	return c.storage.DeleteOnce(ctx, key, origState, out)
 }
 
 func (c *CacheDelegator) Watch(ctx context.Context, key string, opts storage.ListOptions) (watch.Interface, error) {
@@ -193,16 +195,19 @@ func shouldDelegateListOnNotReadyCache(opts storage.ListOptions) bool {
 func (c *CacheDelegator) GuaranteedUpdate(ctx context.Context, key string, destination runtime.Object, ignoreNotFound bool, preconditions *storage.Preconditions, tryUpdate storage.UpdateFunc, cachedExistingObject runtime.Object) error {
 	// Ignore the suggestion and try to pass down the current version of the object
 	// read from cache.
-	if elem, exists, err := c.cacher.watchCache.storage.GetByKey(key); err != nil {
+	if obj, exists, err := c.cacher.get(ctx, key, "0", true); err != nil {
 		klog.Errorf("GetByKey returned error: %v", err)
-	} else if exists {
+	} else if exists && preconditions.Check(key, obj) == nil {
 		// DeepCopy the object since we modify resource version when serializing the
 		// current object.
-		currObj := elem.(*store.Element).Object.DeepCopyObject()
-		return c.storage.GuaranteedUpdate(ctx, key, destination, ignoreNotFound, preconditions, tryUpdate, currObj)
+		return c.storage.GuaranteedUpdate(ctx, key, destination, ignoreNotFound, preconditions, tryUpdate, obj.DeepCopyObject())
 	}
 	// If we couldn't get the object, fallback to no-suggestion.
 	return c.storage.GuaranteedUpdate(ctx, key, destination, ignoreNotFound, preconditions, tryUpdate, nil)
+}
+
+func (c *CacheDelegator) UpdateOnce(ctx context.Context, key string, origState *storage.ObjState, obj runtime.Object, ttl uint64, destination runtime.Object, ignoreNotFound bool) (*storage.ObjState, bool, error) {
+	return c.storage.UpdateOnce(ctx, key, origState, obj, ttl, destination, ignoreNotFound)
 }
 
 func (c *CacheDelegator) Stats(ctx context.Context) (storage.Stats, error) {

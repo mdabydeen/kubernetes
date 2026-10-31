@@ -71,6 +71,7 @@ type TypedDelayingQueueConfig[T comparable] struct {
 //
 // Deprecated: use NewTypedDelayingQueue instead.
 func NewDelayingQueue() DelayingInterface {
+	//nolint:logcheck // Cannot provide Logger here.
 	return NewDelayingQueueWithConfig(DelayingQueueConfig{})
 }
 
@@ -78,6 +79,7 @@ func NewDelayingQueue() DelayingInterface {
 // NewTypedDelayingQueue does not emit metrics. For use with a MetricsProvider, please use
 // NewTypedDelayingQueueWithConfig instead and specify a name.
 func NewTypedDelayingQueue[T comparable]() TypedDelayingInterface[T] {
+	//nolint:logcheck // Cannot provide Logger here.
 	return NewTypedDelayingQueueWithConfig(TypedDelayingQueueConfig[T]{})
 }
 
@@ -120,8 +122,10 @@ func NewTypedDelayingQueueWithConfig[T comparable](config TypedDelayingQueueConf
 
 // NewDelayingQueueWithCustomQueue constructs a new workqueue with ability to
 // inject custom queue Interface instead of the default one
+//
 // Deprecated: Use NewDelayingQueueWithConfig instead.
 func NewDelayingQueueWithCustomQueue(q Interface, name string) DelayingInterface {
+	//nolint:logcheck // Cannot provide Logger here.
 	return NewDelayingQueueWithConfig(DelayingQueueConfig{
 		Name:  name,
 		Queue: q,
@@ -129,15 +133,19 @@ func NewDelayingQueueWithCustomQueue(q Interface, name string) DelayingInterface
 }
 
 // NewNamedDelayingQueue constructs a new named workqueue with delayed queuing ability.
+//
 // Deprecated: Use NewDelayingQueueWithConfig instead.
 func NewNamedDelayingQueue(name string) DelayingInterface {
+	//nolint:logcheck // Cannot provide Logger here.
 	return NewDelayingQueueWithConfig(DelayingQueueConfig{Name: name})
 }
 
 // NewDelayingQueueWithCustomClock constructs a new named workqueue
 // with ability to inject real or fake clock for testing purposes.
+//
 // Deprecated: Use NewDelayingQueueWithConfig instead.
 func NewDelayingQueueWithCustomClock(clock clock.WithTicker, name string) DelayingInterface {
+	//nolint:logcheck // Cannot provide Logger here.
 	return NewDelayingQueueWithConfig(DelayingQueueConfig{
 		Name:  name,
 		Clock: clock,

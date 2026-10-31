@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apiserver/pkg/util/feature"
 	schedulinginformers "k8s.io/client-go/informers/scheduling/v1beta1"
 	"k8s.io/client-go/tools/cache"
@@ -517,7 +518,13 @@ func (jm *Controller) listPodGroupsForWorkload(workload *schedulingv1beta1.Workl
 // podGroupTemplateName returns the name of the single PodGroupTemplate the
 // controller compiles for a Job. For alpha there is exactly one template per Job.
 func podGroupTemplateName(job *batch.Job) string {
-	return fmt.Sprintf("%s-pgt-%d", job.Name, 0)
+	const suffix = "-pgt-0"
+	templateName := job.Name + suffix
+	// Preserve the suffix while keeping the name within the DNS label limit.
+	if len(templateName) > validation.DNS1123LabelMaxLength {
+		templateName = templateName[:validation.DNS1123LabelMaxLength-len(suffix)] + suffix
+	}
+	return templateName
 }
 
 // buildWorkloadItem assembles the single-node logical workload tree for a Job.
@@ -633,8 +640,9 @@ func computeWorkloadName(job *batch.Job) string {
 }
 
 // computePodGroupName is kept as a controller-local adapter for existing callers.
+// TODO: pass the owner UID once it is threaded through.
 func computePodGroupName(workloadName, templateName string) string {
-	return workloadbuilder.GeneratePodGroupName(workloadName, templateName)
+	return workloadbuilder.GeneratePodGroupName(workloadName, templateName, "")
 }
 
 // addSchedulingInformers wires up Workload and PodGroup informers

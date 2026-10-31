@@ -510,6 +510,24 @@ func TestApplyPodLevelResourceDefaults(t *testing.T) {
 			wantLimits:   nil,
 		},
 		{
+			name:                "limits not defaulted when container explicitly sets limit to 0",
+			plrEnabled:          true,
+			plrFixUpdateEnabled: true,
+			pod: &api.Pod{
+				Spec: api.PodSpec{
+					Containers: []api.Container{
+						newContainer("c1", getResourceList("50m", "64Mi"), getResourceList("100m", "128Mi")),
+						newContainer("c2", getResourceList("0", "0"), getResourceList("0", "0")),
+					},
+					Resources: &api.ResourceRequirements{
+						Requests: getResourceList("200m", "256Mi"),
+					},
+				},
+			},
+			wantRequests: getResourceList("200m", "256Mi"),
+			wantLimits:   nil,
+		},
+		{
 			name:                "partial limit defaulting - cpu set, memory not",
 			plrEnabled:          true,
 			plrFixUpdateEnabled: true,
@@ -2370,14 +2388,12 @@ func TestNodeInclusionPolicyEnablementInUpdating(t *testing.T) {
 
 func Test_mutatePodAffinity(t *testing.T) {
 	tests := []struct {
-		name               string
-		pod                *api.Pod
-		wantPod            *api.Pod
-		featureGateEnabled bool
+		name    string
+		pod     *api.Pod
+		wantPod *api.Pod
 	}{
 		{
-			name:               "matchLabelKeys are merged into labelSelector with In and mismatchLabelKeys are merged with NotIn",
-			featureGateEnabled: true,
+			name: "matchLabelKeys are merged into labelSelector with In and mismatchLabelKeys are merged with NotIn",
 			pod: &api.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -2556,8 +2572,7 @@ func Test_mutatePodAffinity(t *testing.T) {
 			},
 		},
 		{
-			name:               "keys, which are not found in Pod labels, are ignored",
-			featureGateEnabled: true,
+			name: "keys, which are not found in Pod labels, are ignored",
 			pod: &api.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -2616,8 +2631,7 @@ func Test_mutatePodAffinity(t *testing.T) {
 			},
 		},
 		{
-			name:               "matchLabelKeys is ignored if the labelSelector is nil",
-			featureGateEnabled: true,
+			name: "matchLabelKeys is ignored if the labelSelector is nil",
 			pod: &api.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -2650,59 +2664,6 @@ func Test_mutatePodAffinity(t *testing.T) {
 						PodAffinity: &api.PodAffinity{
 							RequiredDuringSchedulingIgnoredDuringExecution: []api.PodAffinityTerm{
 								{
-									MatchLabelKeys:    []string{"country"},
-									MismatchLabelKeys: []string{"city"},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "the feature gate is disabled and matchLabelKeys is ignored",
-			pod: &api.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"country": "Japan",
-						"city":    "Kyoto",
-					},
-				},
-				Spec: api.PodSpec{
-					Affinity: &api.Affinity{
-						PodAffinity: &api.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []api.PodAffinityTerm{
-								{
-									LabelSelector: &metav1.LabelSelector{
-										MatchLabels: map[string]string{
-											"region": "Asia",
-										},
-									},
-									MatchLabelKeys:    []string{"country"},
-									MismatchLabelKeys: []string{"city"},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantPod: &api.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"country": "Japan",
-						"city":    "Kyoto",
-					},
-				},
-				Spec: api.PodSpec{
-					Affinity: &api.Affinity{
-						PodAffinity: &api.PodAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: []api.PodAffinityTerm{
-								{
-									LabelSelector: &metav1.LabelSelector{
-										MatchLabels: map[string]string{
-											"region": "Asia",
-										},
-									},
 									MatchLabelKeys:    []string{"country"},
 									MismatchLabelKeys: []string{"city"},
 								},
@@ -2716,11 +2677,6 @@ func Test_mutatePodAffinity(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if !tc.featureGateEnabled {
-				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.32"))
-				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MatchLabelKeysInPodAffinity, false)
-			}
-
 			pod := tc.pod
 			mutatePodAffinity(pod)
 			if diff := cmp.Diff(tc.wantPod.Spec.Affinity, pod.Spec.Affinity); diff != "" {

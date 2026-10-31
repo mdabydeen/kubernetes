@@ -21,7 +21,9 @@ import (
 	"testing"
 
 	resourceapi "k8s.io/api/resource/v1"
+	draapi "k8s.io/dynamic-resource-allocation/api"
 	"k8s.io/dynamic-resource-allocation/cel"
+	"k8s.io/ktesting"
 )
 
 // TestLexicographicalAllocator runs tests which depend on lexicographical sorting.
@@ -32,9 +34,10 @@ func TestLexicographicalAllocator(t *testing.T,
 		features Features,
 		allocateState AllocatedState,
 		classLister DeviceClassLister,
-		slices []*resourceapi.ResourceSlice,
+		slices []*draapi.ResourceSlice,
 		celCache *cel.Cache,
 	) (Allocator, error)) {
+	tCtx := ktesting.Init(t)
 	testcases := map[string]AllocatorTestCase{
 		"lexicographical-sorting-pools": {
 			claimsToAllocate: objects(claimWithRequests(claim0, nil, request(req0, classA, 2))),
@@ -121,5 +124,5 @@ func TestLexicographicalAllocator(t *testing.T,
 		},
 	}
 
-	RunTestAllocator(t, supportedFeatures, newAllocator, testcases)
+	runTestAllocator(tCtx, supportedFeatures, newAllocator, testcases)
 }
